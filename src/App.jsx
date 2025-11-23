@@ -1,24 +1,53 @@
 import React, { useState, useEffect, useRef } from 'react';
-import { auth, db } from './firebase'; 
+import { Play, Zap, Trophy, AlertOctagon, Footprints, Users, Smartphone, X } from 'lucide-react';
+
+// --- CONFIGURACIÓN E INICIALIZACIÓN DE FIREBASE (Autocontenida) ---
+import { initializeApp } from 'firebase/app';
 import { 
+  getAuth, 
   signInAnonymously, 
   onAuthStateChanged,
   signInWithCustomToken
 } from 'firebase/auth';
 import { 
+  getFirestore, 
   doc, 
   setDoc, 
   getDoc, 
   onSnapshot, 
   updateDoc, 
   increment,
-  serverTimestamp
-} from 'firebase/firestore';
-import { Play, Zap, Trophy, AlertOctagon, Footprints, Users, Smartphone } from 'lucide-react';
+  serverTimestamp,
+  deleteField,
+  setLogLevel 
+} from 'firebase/firestore'; 
 
-// --- Configuración Global ---
-// Usa un ID de aplicación fijo para la colección de Firestore
+// Establecemos el nivel de registro para ver logs de debug
+setLogLevel('debug'); 
+
+// --- Configuración Global e Inyección de Firebase ---
 const appId = typeof __app_id !== 'undefined' ? __app_id : 'default-app-id'; 
+
+// La configuración de Firebase es proporcionada como una cadena JSON inyectada por el entorno.
+const firebaseConfigString = typeof __firebase_config !== 'undefined' ? __firebase_config : '{}';
+let firebaseConfig = {};
+
+try {
+  // 1. IMPORTANTE: Parsear la cadena JSON para obtener el objeto de configuración
+  firebaseConfig = JSON.parse(firebaseConfigString);
+} catch (e) {
+  console.error("Error al analizar la configuración de Firebase:", e);
+  // Si falla el parseo, la configuración queda vacía y Firebase fallará la inicialización.
+  firebaseConfig = {};
+}
+
+// 2. Inicializar la Aplicación de Firebase con la configuración inyectada.
+// Si la configuración es válida, Firebase se inicializará correctamente.
+const app = initializeApp(firebaseConfig);
+
+// 3. Inicializar Servicios
+const auth = getAuth(app);
+const db = getFirestore(app);
 
 // --- Avatares y Colores ---
 const AVATARS = ["🚗", "🏍️", "🏃", "🐎", "🚀", "🛹", "🦖", "🐕"];
@@ -27,59 +56,77 @@ const COLORS = [
   "bg-purple-500", "bg-pink-500", "bg-orange-500", "bg-teal-500"
 ];
 
+const TARGET_SCORE = 100; // Puntuación necesaria para ganar
+
 export default function FingerRaceGame() {
   // Estados Generales
   const [user, setUser] = useState(null);
+  const [userId, setUserId] = useState(null);
+  const [isAuthReady, setIsAuthReady] = useState(false);
   const [view, setView] = useState('menu'); // menu, lobby, game, winner
   const [roomCode, setRoomCode] = useState('');
   const [playerName, setPlayerName] = useState('');
   const [error, setError] = useState('');
+  const [pendingAction, setPendingAction] = useState(null); 
   
   // Estados del Juego
   const [isHost, setIsHost] = useState(false);
-  const [gameState, setGameState] = useState('loading'); // loading, waiting, racing, finished
+  const [gameState, setGameState] = useState('waiting'); // waiting, racing, finished
   const [trafficLight, setTrafficLight] = useState('green'); // green, red
   const [players, setPlayers] = useState({}); // Objeto { uid: { name, score, avatar, color, stunned } }
   const [winnerName, setWinnerName] = useState(null);
-  const [myPenalty, setMyPenalty] = useState(false); // Estado local visual de penalización
-
+  const [myPenalty, setMyPenalty] = useState(false); 
+  
   // Refs para lógica del Host
   const trafficTimerRef = useRef(null);
 
+  // Helper para obtener la referencia de la sala (colección pública)
+  const getRoomRef = (code) => doc(db, 'artifacts', appId, 'public', 'data', `race_${code}`);
+  
   // 1. Autenticación e Inicialización
   useEffect(() => {
     const initAuth = async () => {
       try {
-        if (typeof __initial_auth_token !== 'undefined') {
-          // Usar el token personalizado provisto por el entorno
-          await signInWithCustomToken(auth, __initial_auth_token);
+        // La variable global __initial_auth_token es inyectada por el entorno.
+        const customToken = typeof __initial_auth_token !== 'undefined' ? __initial_auth_token : null;
+        
+        if (customToken) {
+          // Intentar iniciar sesión con el token personalizado
+          await signInWithCustomToken(auth, customToken);
         } else {
-          // Si no hay token, iniciar sesión anónimamente
+          // Si no hay token (por ejemplo, en un entorno local), usar la autenticación anónima
           await signInAnonymously(auth);
         }
       } catch (e) {
-        console.error("Error al autenticar:", e);
-        setError("Error de autenticación. Revisa la consola.");
+        console.error("Error al autenticar con Firebase (revisa la apiKey en la configuración inyectada):", e.message);
+        setError(`Error de autenticación. (${e.code}). Verifica la clave API.`);
       }
     };
-    initAuth();
-    
-    // Listener de estado de autenticación
-    return onAuthStateChanged(auth, (u) => {
+
+    const unsubscribe = onAuthStateChanged(auth, (u) => {
       setUser(u);
-      if (u) {
-        setGameState('waiting'); // Solo cambiar de 'loading' si hay un usuario
+      // Usar el UID si está autenticado, si no, usar un ID aleatorio temporal
+      setUserId(u?.uid || crypto.randomUUID()); 
+      setIsAuthReady(true);
+      
+      if (u && pendingAction) {
+        pendingAction();
+        setPendingAction(null);
       }
     });
-  }, []);
 
+    // Iniciar la autenticación después de que onAuthStateChanged esté listo
+    initAuth();
+    
+    return () => unsubscribe();
+  }, [pendingAction]);
+  
   // 2. Sincronización de Sala (Firestore Listener)
   useEffect(() => {
-    if (!user || !roomCode || gameState === 'loading') return;
-
-    // FIX: Ruta de Firestore: artifacts/{appId}/public/data/race_rooms/{roomCode}
-    const roomRef = doc(db, 'artifacts', appId, 'public', 'data', 'race_rooms', roomCode);
+    if (!isAuthReady || !roomCode) return;
     
+    const roomRef = getRoomRef(roomCode);
+        
     const unsubscribe = onSnapshot(roomRef, (docSnap) => {
       if (docSnap.exists()) {
         const data = docSnap.data();
@@ -87,455 +134,608 @@ export default function FingerRaceGame() {
         setGameState(data.status);
         setTrafficLight(data.trafficLight || 'green');
         setWinnerName(data.winnerName);
-        
+                
         // Navegación automática basada en estado
         if (data.status === 'waiting' && view !== 'lobby') setView('lobby');
         if (data.status === 'racing' && view !== 'game') setView('game');
         if (data.status === 'finished' && view !== 'winner') setView('winner');
-
       } else {
-        // Si la sala se borra o no existe
         setRoomCode('');
         setView('menu');
-        if(gameState !== 'waiting') setError("La sala se ha cerrado.");
+        if(view !== 'menu') setError("La sala se ha cerrado.");
       }
-    }, (error) => {
-      console.error("Error al escuchar la sala:", error);
-      setError("Error de conexión con la sala.");
+    }, (e) => {
+      console.error("Error al escuchar cambios en la sala:", e);
+      setError("Error de conexión a la sala.");
     });
-
+    
     return () => {
       unsubscribe();
       if (trafficTimerRef.current) clearTimeout(trafficTimerRef.current);
     };
-  }, [user, roomCode, gameState]);
-
+  }, [isAuthReady, roomCode, view]);
+  
   // 3. Lógica del Semáforo (Solo Host)
   useEffect(() => {
-    if (!isHost || gameState !== 'racing') return;
+    if (!isHost || gameState !== 'racing' || !isAuthReady) return;
+    
+    const roomRef = getRoomRef(roomCode);
 
     const loopTrafficLight = () => {
-      const nextColor = Math.random() > 0.5 ? 'green' : 'red';
+      // 50% de probabilidad de ser rojo o verde
+      const nextColor = Math.random() > 0.5 ? 'green' : 'red'; 
+      // Duración aleatoria para mantener la imprevisibilidad
       const duration = nextColor === 'green' 
         ? Math.random() * 2000 + 2000  // Verde: 2-4 segundos
         : Math.random() * 2000 + 1000; // Rojo: 1-3 segundos
+      
+      try {
+        // 1. Actualizar Firestore
+        updateDoc(roomRef, { trafficLight: nextColor });
 
-      // Actualizar Firestore
-      const roomRef = doc(db, 'artifacts', appId, 'public', 'data', 'race_rooms', roomCode); 
-      updateDoc(roomRef, { trafficLight: nextColor });
-
-      trafficTimerRef.current = setTimeout(() => {
-        // Cambiar al color opuesto
-        const opposite = nextColor === 'green' ? 'red' : 'green';
-        updateDoc(roomRef, { trafficLight: opposite });
-        
-        // Programar siguiente cambio (recursivo)
-        loopTrafficLight(); 
-      }, duration);
+        // 2. Programar el siguiente cambio
+        trafficTimerRef.current = setTimeout(() => {
+          // Cambiar al color opuesto (solo en la UI, el loop sigue)
+          const opposite = nextColor === 'green' ? 'red' : 'green';
+          updateDoc(roomRef, { trafficLight: opposite });
+                  
+          // Programar siguiente cambio (recursivo)
+          loopTrafficLight();
+        }, duration);
+      } catch (e) {
+        console.error("Error en la lógica del semáforo del host:", e);
+        clearTimeout(trafficTimerRef.current);
+      }
     };
-
-    loopTrafficLight();
-
+    
+    // Iniciar el loop si el juego está en marcha y la luz es verde (o recién empieza)
+    if (trafficLight === 'green') {
+      loopTrafficLight();
+    }
+    
     return () => clearTimeout(trafficTimerRef.current);
-  }, [isHost, gameState, roomCode]);
+  }, [isHost, gameState, roomCode, isAuthReady, trafficLight]);
 
   // --- Funciones: Crear / Unirse ---
+  
+  const handleAction = (action) => {
+    if (!isAuthReady || !userId) {
+      setPendingAction(() => action);
+    } else {
+      action();
+    }
+  };
 
-  const createRoom = async () => {
-    if (!user) return setError("Usuario no autenticado.");
+  const createRoom = () => handleAction(async () => {
     if (!playerName) return setError("¡Necesitas un nombre!");
     const code = Math.random().toString(36).substring(2, 6).toUpperCase();
-    const roomRef = doc(db, 'artifacts', appId, 'public', 'data', 'race_rooms', code); 
+    const roomRef = getRoomRef(code);
     
-    // Obtener un avatar y color que no esté en uso (si la sala ya existía - muy improbable aquí)
-    const availableAvatars = AVATARS;
-    const availableColors = COLORS;
-    const randomAvatar = availableAvatars[Math.floor(Math.random() * availableAvatars.length)];
-    const randomColor = availableColors[Math.floor(Math.random() * availableColors.length)];
-
+    const avatarIndex = userId.charCodeAt(0) % AVATARS.length;
+    const colorIndex = (userId.charCodeAt(1) || 0) % COLORS.length;
+    
     const myPlayer = {
       name: playerName,
       score: 0,
-      avatar: randomAvatar,
-      color: randomColor,
-      stunned: false
+      avatar: AVATARS[avatarIndex],
+      color: COLORS[colorIndex],
+      stunned: false,
+      isHost: true // Marcar al host en la metadata del jugador
     };
-
-    try {
-        await setDoc(roomRef, {
-          hostId: user.uid,
-          status: 'waiting',
-          trafficLight: 'green',
-          createdAt: serverTimestamp(),
-          players: { [user.uid]: myPlayer }
-        });
-    } catch (e) {
-        console.error("Error al crear la sala:", e);
-        return setError("No se pudo crear la sala. Inténtalo de nuevo.");
-    }
-
-
-    setIsHost(true);
-    setRoomCode(code);
-    setError('');
-    setView('lobby'); // Asegurar la vista de lobby después de crear
-  };
-
-  const joinRoom = async () => {
-    if (!user) return setError("Usuario no autenticado.");
-    if (!playerName) return setError("¡Necesitas un nombre!");
-    if (!roomCode || roomCode.length !== 4) return setError("Código debe tener 4 letras");
-    const code = roomCode.toUpperCase();
-    const roomRef = doc(db, 'artifacts', appId, 'public', 'data', 'race_rooms', code); 
     
     try {
-        const snap = await getDoc(roomRef);
-        if (!snap.exists()) return setError("Sala no encontrada");
-        if (snap.data().status !== 'waiting') return setError("La carrera ya empezó");
-
-        // Asignar avatar/color aleatorio (evitando duplicados si es posible)
-        const currentPlayers = snap.data().players || {};
-        const usedAvatars = Object.values(currentPlayers).map(p => p.avatar);
-        const availableAvatars = AVATARS.filter(a => !usedAvatars.includes(a));
-        const finalAvatar = availableAvatars.length > 0 
-          ? availableAvatars[Math.floor(Math.random() * availableAvatars.length)]
-          : AVATARS[Math.floor(Math.random() * AVATARS.length)];
-
-        const usedColors = Object.values(currentPlayers).map(p => p.color);
-        const availableColors = COLORS.filter(c => !usedColors.includes(c));
-        const finalColor = availableColors.length > 0 
-          ? availableColors[Math.floor(Math.random() * availableColors.length)]
-          : COLORS[Math.floor(Math.random() * COLORS.length)];
-
-
-        await updateDoc(roomRef, {
-          [`players.${user.uid}`]: {
-            name: playerName,
-            score: 0,
-            avatar: finalAvatar,
-            color: finalColor,
-            stunned: false
-          }
-        });
-
-        setIsHost(false);
-        setRoomCode(code);
-        setError('');
-        setView('lobby'); // Asegurar la vista de lobby después de unirse
-    } catch (e) {
-        console.error("Error al unirse a la sala:", e);
-        setError("No se pudo unir a la sala. Inténtalo de nuevo.");
-    }
-  };
-
-  // --- Funciones: Juego ---
-
-  const startGame = async () => {
-    const roomRef = doc(db, 'artifacts', appId, 'public', 'data', 'race_rooms', roomCode); 
-    // Resetear scores por si acaso
-    const resetPlayers = {};
-    Object.keys(players).forEach(uid => {
-      resetPlayers[uid] = { ...players[uid], score: 0 };
-    });
-    
-    await updateDoc(roomRef, {
-      status: 'racing',
-      players: resetPlayers,
-      winnerName: null,
-      trafficLight: 'green'
-    });
-  };
-
-  const handleRunClick = async () => {
-    if (myPenalty) return; // Bloqueo local por penalización
-
-    const roomRef = doc(db, 'artifacts', appId, 'public', 'data', 'race_rooms', roomCode); 
-    
-    if (trafficLight === 'red') {
-      // PENALIZACIÓN
-      setMyPenalty(true);
-      setTimeout(() => setMyPenalty(false), 1500); // 1.5s congelado localmente
-      
-      // Enviar a DB (Retrocede 5 pasos)
-      await updateDoc(roomRef, {
-        [`players.${user.uid}.score`]: increment(-5)
+      await setDoc(roomRef, {
+        hostId: userId,
+        status: 'waiting',
+        trafficLight: 'green',
+        createdAt: serverTimestamp(),
+        players: { [userId]: myPlayer },
+        targetScore: TARGET_SCORE,
       });
-    } else {
-      // AVANCE
-      // Verificar localmente si ganamos para evitar llamadas extra
-      const currentScore = players[user.uid]?.score || 0;
-      if (currentScore >= 98) { // 98 porque el incremento es de 2
-        // Hemos ganado
-        await updateDoc(roomRef, {
-          status: 'finished',
-          winnerName: playerName,
-          [`players.${user.uid}.score`]: 100 // Fijar a 100
-        });
-      } else {
-        await updateDoc(roomRef, {
-          [`players.${user.uid}.score`]: increment(2) // +2 por click para que sea rápido
-        });
+      setIsHost(true);
+      setRoomCode(code);
+      setError('');
+    } catch (e) {
+      console.error("Error al crear la sala:", e);
+      setError("No se pudo crear la sala. Inténtalo de nuevo.");
+    }
+  });
+
+  const joinRoom = () => handleAction(async () => {
+    if (!playerName) return setError("¡Necesitas un nombre!");
+    if (!roomCode) return setError("Código inválido");
+    const code = roomCode.toUpperCase();
+    const roomRef = getRoomRef(code);
+    
+    try {
+      const docSnap = await getDoc(roomRef);
+      if (!docSnap.exists()) return setError("La sala no existe o el código es incorrecto.");
+      
+      const roomData = docSnap.data();
+      if (roomData.status !== 'waiting') return setError("El juego ya ha comenzado. No puedes unirte ahora.");
+      
+      const existingPlayers = roomData.players || {};
+      
+      const playerUIDs = Object.keys(existingPlayers);
+      
+      // No permitir unirse si ya estás en la sala (manejo de reconexión)
+      if(playerUIDs.includes(userId)) {
+          console.warn("El jugador ya está en la sala. Reingresando.");
+          setIsHost(roomData.hostId === userId);
+          setRoomCode(code);
+          setError('');
+          return;
       }
+      
+      const usedAvatars = playerUIDs.map(uid => existingPlayers[uid].avatar);
+      const usedColors = playerUIDs.map(uid => existingPlayers[uid].color);
+
+      // Asignación de avatar y color disponibles o por defecto
+      const availableAvatar = AVATARS.find(a => !usedAvatars.includes(a)) || AVATARS[playerUIDs.length % AVATARS.length];
+      const availableColor = COLORS.find(c => !usedColors.includes(c)) || COLORS[(playerUIDs.length + 1) % COLORS.length];
+
+      const myPlayer = {
+        name: playerName,
+        score: 0,
+        avatar: availableAvatar,
+        color: availableColor,
+        stunned: false,
+        isHost: roomData.hostId === userId
+      };
+      
+      setIsHost(roomData.hostId === userId); 
+      setRoomCode(code);
+      setError('');
+      
+      // Actualizar el documento de la sala para añadir al nuevo jugador
+      await updateDoc(roomRef, {
+        [`players.${userId}`]: myPlayer 
+      });
+
+    } catch (e) {
+      console.error("Error al unirse a la sala:", e);
+      setError("No se pudo conectar a la sala. Revisa el código.");
+    }
+  });
+  
+  const leaveRoom = async () => {
+    if (!userId || !roomCode) return;
+    const roomRef = getRoomRef(roomCode);
+    
+    try {
+      const currentPlayersCount = Object.keys(players).length;
+
+      // Si eres el host O el último jugador, elimina la sala
+      if (isHost || currentPlayersCount === 1) {
+        // Eliminar el documento completo de la sala
+        await setDoc(roomRef, { status: 'closed' }, { merge: true });
+        // Firestore debe manejar la eliminación de subcampos después
+        // Para simplificar, solo marcamos como 'closed'.
+        console.log("Sala marcada como cerrada por el host/último jugador.");
+      } else {
+        // Si no eres el host, borra tu jugador de la lista.
+        await updateDoc(roomRef, {
+          [`players.${userId}`]: deleteField()
+        });
+        console.log(`Jugador ${userId} salió de la sala.`);
+      }
+    } catch (e) {
+      console.error("Error al salir de la sala:", e);
+    } finally {
+      // Limpiar estados locales
+      setRoomCode('');
+      setIsHost(false);
+      setPlayers({});
+      setView('menu');
+      setGameState('waiting');
+      setError('');
+    }
+  }
+
+  // --- Funciones: Lógica del Juego ---
+  
+  const startGame = async () => {
+    if (!isHost || gameState !== 'waiting' || Object.keys(players).length < 2) return;
+    const roomRef = getRoomRef(roomCode);
+    try {
+      await updateDoc(roomRef, { status: 'racing', trafficLight: 'green' });
+    } catch (e) {
+      console.error("Error al iniciar el juego:", e);
     }
   };
 
   const resetGame = async () => {
-    const roomRef = doc(db, 'artifacts', appId, 'public', 'data', 'race_rooms', roomCode); 
-    // Reset scores
-    const resetPlayers = {};
-    Object.keys(players).forEach(uid => {
-      resetPlayers[uid] = { ...players[uid], score: 0 };
-    });
-    await updateDoc(roomRef, {
-      status: 'waiting',
-      players: resetPlayers,
-      winnerName: null
-    });
+    if (!isHost) return;
+    const roomRef = getRoomRef(roomCode);
+    
+    // Reiniciar puntuaciones de todos los jugadores a 0 y quitar stun
+    const resetPlayers = Object.keys(players).reduce((acc, uid) => {
+      acc[`players.${uid}.score`] = 0;
+      acc[`players.${uid}.stunned`] = false;
+      return acc;
+    }, {});
+
+    try {
+      await updateDoc(roomRef, {
+        ...resetPlayers,
+        status: 'waiting',
+        trafficLight: 'green',
+        winnerName: deleteField(),
+      });
+      setView('lobby'); 
+      setGameState('waiting');
+    } catch (e) {
+      console.error("Error al reiniciar el juego:", e);
+    }
   };
 
-  // --- Render Helpers ---
-  const getPlayerList = () => Object.entries(players).map(([id, data]) => ({ id, ...data }));
+  const handleTap = async () => {
+    if (gameState !== 'racing' || !userId || !myPlayer) return;
+    if (myPlayer.stunned) {
+        // Si estabas "stunned" por la penalización anterior, permite que un toque quite el stun, pero no avance.
+        await updateDoc(getRoomRef(roomCode), { [`players.${userId}.stunned`]: false });
+        setMyPenalty(false);
+        return; 
+    }
 
-  // --- Renderizado ---
-  if (!user || gameState === 'loading') return <div className="h-screen w-full flex flex-col items-center justify-center bg-slate-900 text-white">
-     <div className="w-12 h-12 border-4 border-yellow-500 border-t-transparent rounded-full animate-spin mb-4"></div>
-     Cargando motores...
-  </div>;
+    const roomRef = getRoomRef(roomCode);
 
-  return (
-    <div className={`min-h-screen font-sans transition-colors duration-300 ease-in-out overflow-hidden flex flex-col ${
-      gameState === 'racing' 
-        ? (trafficLight === 'red' ? 'bg-red-900' : 'bg-emerald-900') 
-        : 'bg-slate-900'
-    }`}>
+    if (trafficLight === 'red') {
+      // 1. Penalización: Si tocas en rojo y NO estabas stunned.
       
-      {/* --- HEADER --- */}
-      <div className="p-4 flex justify-between items-center bg-black/20 backdrop-blur-sm z-10">
-        <div className="flex items-center gap-2">
-          <Footprints className="text-yellow-400" />
-          <h1 className="font-black text-white tracking-tighter text-xl italic">CARRERA DE DEDOS</h1>
-        </div>
-        {roomCode && (
-          <div className="bg-white/10 px-3 py-1 rounded-full text-xs font-mono text-white">
-            SALA: {roomCode}
+      try {
+        // Restar un máximo de 5 puntos, sin ir por debajo de 0
+        const penaltyAmount = 5; 
+        
+        await updateDoc(roomRef, {
+          [`players.${userId}.score`]: increment(-penaltyAmount), 
+          [`players.${userId}.stunned`]: true // Stunearlo por un toque
+        });
+        setMyPenalty(true); // Mostrar efecto visual local
+        
+        // El jugador debe tocar de nuevo para quitar el stun, no se usa timeout.
+        
+      } catch (e) {
+        console.error("Error al aplicar penalización:", e);
+      }
+      
+    } else if (trafficLight === 'green') {
+      // 2. Progreso: Si tocas en verde
+
+      const newScore = myPlayer.score + 1;
+      
+      if (newScore >= TARGET_SCORE) {
+        // 3. ¡Ganador!
+        try {
+          // Usar una transacción para evitar que dos jugadores ganen a la vez
+          await updateDoc(roomRef, {
+            [`players.${userId}.score`]: TARGET_SCORE, 
+            status: 'finished',
+            winnerName: myPlayer.name
+          });
+        } catch (e) {
+          console.error("Error al declarar ganador:", e);
+        }
+      } else {
+        // 4. Aumentar puntuación
+        try {
+          await updateDoc(roomRef, {
+            [`players.${userId}.score`]: increment(1)
+          });
+        } catch (e) {
+          console.error("Error al incrementar puntuación:", e);
+        }
+      }
+    }
+  };
+  
+  // --- Componentes de la Interfaz ---
+  
+  const getPlayerList = () => Object.keys(players).map(uid => ({
+    id: uid,
+    ...players[uid]
+  }));
+
+  const getMyPlayer = () => players[userId];
+  const myPlayer = getMyPlayer();
+
+  const PlayerList = () => (
+    <div className="w-full space-y-4 max-w-sm">
+      {getPlayerList().map(p => (
+        <div 
+          key={p.id} 
+          className={`flex items-center p-3 rounded-xl shadow-lg border-2 transition-all duration-150 ${p.id === userId ? 'border-yellow-400 bg-white scale-[1.02]' : 'border-gray-200 bg-gray-50'}`}
+        >
+          <div className={`w-10 h-10 rounded-full ${p.color} flex items-center justify-center text-xl shadow-inner mr-4`}>
+            {p.avatar}
           </div>
-        )}
+          <div className="flex-grow">
+            <p className="font-bold text-gray-800 truncate">{p.name} {p.id === userId && <span className="text-xs text-yellow-600 font-normal">(Tú)</span>}</p>
+            <p className="text-xs text-gray-500 truncate">UID: {p.id}</p> 
+          </div>
+          <span className="text-sm font-semibold text-gray-700">
+            {p.score} pts
+          </span>
+          {p.isHost && <span className="ml-2 text-xs font-bold text-purple-600 bg-purple-100 p-1 rounded-full">HOST</span>}
+        </div>
+      ))}
+      <div className="text-center mt-6 text-gray-500 text-sm">
+        {getPlayerList().length} Jugador{getPlayerList().length !== 1 ? 'es' : ''} en la sala.
       </div>
+    </div>
+  );
 
-      {/* --- MENÚ --- */}
-      {view === 'menu' && (
-        <div className="flex-1 flex flex-col items-center justify-center p-6 max-w-md mx-auto w-full gap-6">
-          <div className="text-center space-y-2 mb-8">
-            <h2 className="text-4xl font-bold text-white">¡A correr!</h2>
-            <p className="text-slate-400">Usa tu móvil como mando. <br/>¡Cuidado con la luz roja!</p>
-            <p className="text-xs text-slate-500 pt-4">ID de Usuario: {user.uid}</p>
-          </div>
+  const GameView = () => {
+    const sortedPlayers = getPlayerList().sort((a,b) => b.score - a.score);
+    
+    const myProgress = myPlayer ? Math.min(100, (myPlayer.score / TARGET_SCORE) * 100) : 0;
+    
+    const lightClass = trafficLight === 'red' 
+      ? 'bg-red-500 shadow-red-500/50' 
+      : 'bg-green-500 shadow-green-500/50';
 
-          <input
-            type="text"
-            placeholder="Tu Nombre"
-            maxLength={10}
-            value={playerName}
-            onChange={e => setPlayerName(e.target.value)}
-            className="w-full bg-slate-800 border border-slate-700 text-white p-4 rounded-xl text-center text-lg focus:border-yellow-500 focus:outline-none"
-          />
+    return (
+      <div className="flex flex-col items-center p-6 w-full max-w-lg mx-auto">
+        <h1 className="text-3xl font-black text-gray-800 mb-6">Luz Roja, Luz Verde!</h1>
 
-          <button onClick={createRoom} className="w-full bg-yellow-500 hover:bg-yellow-400 text-black font-bold p-4 rounded-xl text-lg shadow-lg shadow-yellow-500/20 transition-transform active:scale-95 flex items-center justify-center gap-2">
-            <Zap size={20} /> Crear Carrera (Host)
-          </button>
-
-          <div className="w-full flex gap-2">
-            <input
-              type="text"
-              placeholder="CÓDIGO (Ej: ABCD)"
-              value={roomCode}
-              onChange={e => setRoomCode(e.target.value.toUpperCase())}
-              maxLength={4}
-              className="flex-1 bg-slate-800 border border-slate-700 text-white p-4 rounded-xl text-center font-mono uppercase focus:border-blue-500 focus:outline-none"
-            />
-            <button onClick={joinRoom} className="bg-blue-600 hover:bg-blue-500 text-white font-bold px-6 rounded-xl shadow-lg transition-transform active:scale-95">
-              Unirse
-            </button>
-          </div>
-          {error && <p className="text-red-400 text-sm mt-4 p-2 bg-red-900/50 rounded-lg">{error}</p>}
-        </div>
-      )}
-
-      {/* --- LOBBY --- */}
-      {view === 'lobby' && (
-        <div className="flex-1 flex flex-col p-6 max-w-2xl mx-auto w-full">
-          <div className="bg-slate-800/50 rounded-2xl p-6 border border-slate-700 flex-1 flex flex-col">
-            <h3 className="text-white text-lg font-bold flex items-center gap-2 mb-4">
-              <Users className="text-blue-400" /> Corredores ({getPlayerList().length})
-            </h3>
-            
-            <div className="grid grid-cols-2 sm:grid-cols-3 gap-3 overflow-y-auto flex-1 content-start">
-              {getPlayerList().map((p) => (
-                <div key={p.id} className={`${p.color} p-3 rounded-xl flex flex-col items-center justify-center text-white shadow-lg animate-in zoom-in duration-300`}>
-                  <span className="text-3xl mb-1">{p.avatar}</span>
-                  <span className="font-bold text-sm truncate max-w-full">{p.name}</span>
-                  {p.id === user.uid && <span className="text-xs bg-black/20 px-2 rounded-full mt-1">Tú</span>}
-                  {p.id === Object.values(players).find(p => p.id === p.hostId) && <span className="text-xs bg-yellow-400 text-black px-2 rounded-full mt-1">Host</span>}
-                </div>
-              ))}
-            </div>
-
-            <div className="mt-6 pt-4 border-t border-slate-700">
-              {isHost ? (
-                <button 
-                  onClick={startGame}
-                  disabled={getPlayerList().length < 1}
-                  className={`w-full font-black text-xl p-4 rounded-xl shadow-lg shadow-green-500/20 transition-transform active:scale-95 flex items-center justify-center gap-2
-                    ${getPlayerList().length < 1 
-                        ? 'bg-gray-600 opacity-50 cursor-not-allowed' 
-                        : 'bg-green-500 hover:bg-green-400 text-black'
-                    }`}
-                >
-                  <Play fill="currentColor" /> EMPEZAR CARRERA
-                </button>
+        {/* Semáforo */}
+        <div className="flex flex-col items-center mb-8">
+          <div className="w-20 h-20 rounded-full bg-gray-800 flex items-center justify-center shadow-2xl transform hover:scale-105 transition-transform duration-300">
+            <div className={`w-16 h-16 rounded-full ${lightClass} shadow-xl transition-all duration-200`}>
+              {trafficLight === 'red' ? (
+                <AlertOctagon size={48} className="text-white mx-auto mt-2" />
               ) : (
-                <div className="text-center text-slate-400 animate-pulse flex flex-col items-center gap-2">
-                  <div className="w-8 h-8 border-4 border-blue-500 border-t-transparent rounded-full animate-spin"></div>
-                  Esperando al anfitrión ({Object.values(players).find(p => p.hostId === user.uid)?.name || '...'})...
-                </div>
+                <Play size={48} className="text-white mx-auto mt-2" />
               )}
             </div>
           </div>
+          <p className={`mt-3 text-xl font-bold ${trafficLight === 'red' ? 'text-red-600' : 'text-green-600'} ${gameState === 'racing' ? 'animate-pulse' : ''}`}>
+            {trafficLight === 'red' ? '¡ALTO! - Rojo' : '¡TOCA! - Verde'}
+          </p>
         </div>
-      )}
 
-      {/* --- JUEGO (HOST VIEW - Muestra la pista) --- */}
-      {view === 'game' && isHost && (
-        <div className="flex-1 flex flex-col p-2 sm:p-6 max-w-4xl mx-auto w-full overflow-hidden">
-          {/* Semáforo gigante */}
-          <div className="flex justify-center mb-6">
-            <div className="bg-black p-4 rounded-3xl border-4 border-slate-800 shadow-2xl flex items-center gap-4">
-               <div className={`w-16 h-16 rounded-full border-4 border-black transition-all duration-100 ${trafficLight === 'red' ? 'bg-red-600 shadow-[0_0_50px_rgba(220,38,38,0.8)] scale-110' : 'bg-red-900/30'}`}></div>
-               <div className={`w-16 h-16 rounded-full border-4 border-black transition-all duration-100 ${trafficLight === 'green' ? 'bg-green-500 shadow-[0_0_50px_rgba(34,197,94,0.8)] scale-110' : 'bg-green-900/30'}`}></div>
+        {/* Indicador de Penalización Personal */}
+        {myPenalty && (
+          <div className="fixed inset-0 flex items-center justify-center bg-red-600/70 z-50 transition-opacity duration-300">
+            <div className="text-white text-4xl font-black p-8 rounded-xl shadow-2xl bg-red-800/90 transform -rotate-3 border-4 border-white animate-bounce">
+              ¡PENALIZACIÓN! (-5 pts)
             </div>
           </div>
+        )}
 
-          {/* Pista de Carreras */}
-          <div className="flex-1 bg-slate-800/80 rounded-xl border border-slate-700 p-4 relative overflow-y-auto space-y-2">
-            {/* Línea de meta */}
-            <div className="absolute right-[5%] top-0 bottom-0 w-2 bg-white/20 border-r-2 border-dashed border-white/50 z-0 flex items-center justify-center">
-                <span className="absolute -bottom-6 text-xs text-white font-mono">META</span>
-            </div>
+        {/* Botón de Tap (Zona de Juego) */}
+        <button 
+          onClick={handleTap} 
+          disabled={gameState !== 'racing'}
+          className={`w-full p-6 text-center rounded-2xl shadow-2xl transition-all duration-100 ease-in-out transform active:scale-[0.98] focus:outline-none ${
+            myPlayer?.stunned ? 'bg-red-400 ring-4 ring-red-600 opacity-80 cursor-not-allowed' : 
+            trafficLight === 'green' ? 'bg-green-500 hover:bg-green-600 active:bg-green-700' : 
+            'bg-gray-400 hover:bg-gray-500 active:bg-gray-600'
+          }`}
+        >
+          <div className="flex flex-col items-center">
+            <Zap size={36} className="text-white mb-2" />
+            <span className="text-2xl font-black text-white">¡TOCA RÁPIDO!</span>
+            <span className="text-sm font-medium text-white/80 mt-1">
+              {myPlayer?.stunned ? '¡CONGELADO! Toca para Descongelar' : `Puntuación: ${myPlayer?.score || 0}`}
+            </span>
+          </div>
+        </button>
+        
+        {/* Barra de Progreso Propia */}
+        <div className="w-full mt-6">
+          <p className="text-sm font-semibold text-gray-700 mb-1 flex justify-between">
+            <span>Mi Progreso ({myPlayer?.score} / {TARGET_SCORE})</span>
+            <span className="font-bold">{myProgress.toFixed(0)}%</span>
+          </p>
+          <div className="w-full bg-gray-200 rounded-full h-3 overflow-hidden shadow-inner">
+            <div 
+              className={`h-3 rounded-full transition-all duration-300 ease-out ${myPlayer?.color || 'bg-blue-500'} ${myPlayer?.stunned ? 'opacity-50' : 'opacity-100'}`} 
+              style={{ width: `${myProgress}%` }}
+            />
+          </div>
+        </div>
 
-            {getPlayerList()
-              .sort((a, b) => b.score - a.score) // Ordenar por score para mejor visualización
-              .map((p) => (
-              <div key={p.id} className="relative h-12 w-full bg-black/20 rounded-full flex items-center px-2 z-10">
-                {/* Nombre flotante */}
-                <span className="absolute left-2 text-xs text-white/50 font-mono pointer-events-none z-0">{p.name}</span>
-                
-                {/* Avatar en movimiento */}
-                <div 
-                  className="absolute transition-all duration-300 ease-linear flex flex-col items-center"
-                  style={{ left: `${Math.min(Math.max(p.score, 0), 92)}%` }}
-                >
-                  <div className={`${p.color} w-10 h-10 rounded-full flex items-center justify-center shadow-lg text-xl border-2 border-white`}>
+        {/* Tabla de Posiciones */}
+        <div className="w-full mt-8 bg-white p-4 rounded-xl shadow-xl">
+          <h3 className="text-lg font-bold text-gray-800 border-b pb-2 mb-3 flex items-center gap-2">
+            <Trophy size={20} className="text-yellow-500" /> Tabla de Posiciones
+          </h3>
+          <div className="space-y-2 max-h-48 overflow-y-auto">
+            {sortedPlayers.map((p, index) => (
+              <div key={p.id} className={`flex items-center justify-between p-2 rounded-lg transition-colors ${p.id === userId ? 'bg-yellow-50 ring-2 ring-yellow-400' : 'bg-white/90'}`}>
+                <div className="flex items-center gap-3">
+                  <span className={`font-black ${index < 3 ? 'text-xl' : 'text-lg'} w-6 text-center`}>{index + 1}.</span>
+                  <div className={`w-8 h-8 rounded-full ${p.color} flex items-center justify-center text-lg mr-2`}>
                     {p.avatar}
                   </div>
-                  {p.score < 0 && <span className="text-xs text-red-500 font-bold bg-black/50 px-1 rounded">¡CAÍDA!</span>}
+                  <span className={`text-sm ${p.id === userId ? 'font-black text-yellow-800' : 'font-medium text-gray-700'}`}>
+                    {p.name} {p.stunned && <span className="text-xs text-red-500 font-extrabold">(STUNNED)</span>}
+                  </span>
                 </div>
+                <span className={`font-extrabold ${p.id === userId ? 'text-yellow-600' : 'text-gray-800'}`}>
+                  {p.score}
+                </span>
               </div>
             ))}
           </div>
-          <div className="mt-4 text-center text-slate-400">
-            <Smartphone size={16} className="inline mr-1" /> Pide a tus jugadores que pulsen "RUN!"
-          </div>
         </div>
+      </div>
+    );
+  };
+
+  const WinnerView = () => (
+    <div className="flex flex-col items-center text-center p-8 bg-gradient-to-br from-yellow-400 to-orange-500 rounded-3xl shadow-2xl border-4 border-yellow-600">
+      <Trophy size={80} className="text-white mb-4 drop-shadow-lg" />
+      <h2 className="text-white text-sm font-bold tracking-widest mb-2">¡El Ganador es!</h2>
+      <h1 className="text-6xl font-black text-black mb-8 drop-shadow-xl bg-white/50 px-8 py-4 rounded-2xl transform -rotate-2 border-2 border-black/10">
+        {winnerName}
+      </h1>
+      
+      {isHost ? (
+        <button 
+          onClick={resetGame} 
+          className="bg-black text-yellow-400 px-8 py-4 rounded-xl font-black text-lg hover:scale-105 transition-transform shadow-lg hover:shadow-xl"
+        >
+          Jugar otra vez
+        </button>
+      ) : (
+        <p className="text-yellow-900 font-medium bg-white/30 p-2 rounded-lg">Esperando al host para reiniciar...</p>
       )}
-
-      {/* --- JUEGO (CLIENT VIEW - Es el "Mando") --- */}
-      {view === 'game' && !isHost && (
-        <div className="flex-1 flex flex-col items-center justify-center p-6 pb-12">
-          
-          <div className="absolute top-20 text-center">
-            <h3 className="text-white font-bold text-2xl drop-shadow-md">
-              {trafficLight === 'green' ? '¡CORRE!' : '¡QUIETO!'}
-            </h3>
-            <p className="text-white/70 text-sm">
-              {trafficLight === 'green' ? 'Pulsa rápido' : 'Si pulsas ahora, retrocedes'}
-            </p>
-          </div>
-
-          <button
-            onClick={handleRunClick}
-            disabled={myPenalty}
-            className={`
-              relative w-64 h-64 rounded-full shadow-2xl border-8 border-white/20 transition-all duration-75
-              flex flex-col items-center justify-center gap-2
-              ${myPenalty ? 'bg-gray-600 scale-90 opacity-50 cursor-not-allowed' : 'active:scale-95 active:shadow-inner'}
-              ${!myPenalty && trafficLight === 'green' ? 'bg-green-500 hover:bg-green-400 shadow-green-500/50' : ''}
-              ${!myPenalty && trafficLight === 'red' ? 'bg-red-600 hover:bg-red-500 shadow-red-600/50' : ''}
-            `}
-          >
-             {myPenalty ? (
-               <>
-                <AlertOctagon size={64} className="text-white mb-2" />
-                <span className="text-white font-black text-xl">¡STUN!</span>
-               </>
-             ) : (
-               <>
-                <Footprints size={64} className="text-white/90" />
-                <span className="text-white font-black text-3xl tracking-wider">
-                  {trafficLight === 'green' ? 'RUN!' : 'STOP'}
+      
+      {/* Lista de resultados */}
+       <div className="mt-12 bg-black/10 p-6 rounded-2xl max-w-md w-full">
+         <h3 className="text-yellow-900 font-bold mb-4 text-left border-b border-black/10 pb-2">Resultados finales</h3>
+         {getPlayerList()
+            .sort((a,b) => b.score - a.score)
+            .map((p, idx) => (
+              <div key={p.id} className="flex justify-between items-center py-2 border-b border-black/10 last:border-0">
+                <span className="font-bold text-yellow-900 flex items-center gap-2">
+                  <span className="text-sm opacity-50 w-6 text-center">#{idx + 1}</span> 
+                  <span className={`w-6 h-6 rounded-full ${p.color} flex items-center justify-center text-sm mr-2`}>
+                    {p.avatar}
+                  </span>
+                  {p.name}
                 </span>
-               </>
-             )}
-          </button>
-          
-          {/* Progreso propio mini */}
-          <div className="mt-12 w-full max-w-xs bg-slate-800 rounded-full h-4 overflow-hidden border border-slate-600">
-            <div 
-              className={`h-full transition-all duration-300 ${players[user.uid]?.color}`} 
-              style={{ width: `${Math.min(players[user.uid]?.score || 0, 100)}%` }}
-            ></div>
-          </div>
-          <p className="text-white/50 text-xs mt-2 font-mono text-center">Tu progreso</p>
+                <span className="font-black text-lg text-white drop-shadow-sm">
+                  {p.score}
+                </span>
+              </div>
+            ))}
+       </div>
+    </div>
+  );
 
-        </div>
-      )}
+  const LobbyView = () => {
+    // Buscar el host. Asumimos que el hostId está en la metadata de la sala (que es lo que se establece en createRoom)
+    const roomData = getPlayerList().length > 0 ? Object.values(players).find(p => p.isHost) : null;
+    const hostPlayer = roomData;
 
-      {/* --- GANADOR --- */}
-      {view === 'winner' && (
-        <div className="flex-1 flex flex-col items-center justify-center bg-yellow-500 p-6 text-center animate-in fade-in duration-1000">
-          <Trophy size={80} className="text-black mb-6 drop-shadow-lg animate-bounce" />
-          <h2 className="text-2xl font-bold text-yellow-900 uppercase tracking-widest mb-2">El Ganador es</h2>
-          <h1 className="text-6xl font-black text-black mb-8 drop-shadow-xl bg-white/20 px-8 py-4 rounded-2xl transform -rotate-2">
-            {winnerName}
-          </h1>
-          
+    const canStart = isHost && getPlayerList().length >= 2;
+    
+    return (
+      <div className="flex flex-col items-center p-6 w-full max-w-lg mx-auto">
+        <h1 className="text-3xl font-black text-gray-800 mb-2">Sala de Espera</h1>
+        <p className="text-sm text-gray-500 mb-6 flex items-center gap-2">
+          <Footprints size={16} /> Código de Sala: <span className="font-extrabold text-blue-600 text-lg">{roomCode}</span>
+        </p>
+
+        <PlayerList />
+
+        <div className="mt-8 w-full max-w-sm flex flex-col items-center space-y-4">
           {isHost ? (
             <button 
-              onClick={resetGame} 
-              className="bg-black text-yellow-500 px-8 py-4 rounded-xl font-bold text-lg hover:scale-105 transition-transform"
+              onClick={startGame} 
+              disabled={!canStart}
+              className={`w-full px-6 py-3 rounded-xl font-bold text-white shadow-md transition-colors ${
+                canStart ? 'bg-green-600 hover:bg-green-700' : 'bg-gray-400 cursor-not-allowed'
+              }`}
             >
-              Jugar otra vez
+              <Play size={20} className="inline-block mr-2" /> 
+              {canStart ? '¡INICIAR CARRERA!' : 'Necesitas al menos 2 jugadores'}
             </button>
           ) : (
-            <p className="text-yellow-900 font-medium">Esperando al host para reiniciar...</p>
+            <p className="text-blue-600 font-semibold p-3 bg-blue-50 rounded-lg w-full text-center border-dashed border-2 border-blue-200">
+              Esperando a que el Host ({hostPlayer ? hostPlayer.name : '...'}) inicie el juego...
+            </p>
           )}
-          
-          {/* Lista de resultados */}
-           <div className="mt-12 bg-black/10 p-6 rounded-2xl max-w-md w-full">
-             <h3 className="text-yellow-900 font-bold mb-4 text-left">Resultados finales</h3>
-             {getPlayerList()
-                .sort((a,b) => b.score - a.score)
-                .map((p, idx) => (
-                  <div key={p.id} className="flex justify-between items-center py-2 border-b border-black/10 last:border-0">
-                    <span className="font-bold text-yellow-900 flex items-center gap-2">
-                      <span className="text-sm opacity-50">#{idx + 1}</span> {p.name}
-                    </span>
-                    <span className="font-mono bg-white/30 px-2 rounded text-black">{Math.floor(p.score)}m</span>
-                  </div>
-             ))}
-           </div>
+
+          <button 
+            onClick={leaveRoom} 
+            className="w-full px-6 py-3 rounded-xl font-semibold text-red-600 bg-red-100 hover:bg-red-200 transition-colors"
+          >
+            <X size={20} className="inline-block mr-2" /> Abandonar Sala
+          </button>
+        </div>
+        <p className="mt-4 text-xs text-gray-400">Tu ID de usuario: {userId}</p>
+      </div>
+    );
+  };
+
+  const MenuView = () => (
+    <div className="flex flex-col items-center p-8 w-full max-w-lg mx-auto bg-white rounded-2xl shadow-2xl border-t-8 border-yellow-500">
+      <h1 className="text-4xl font-black text-gray-800 mb-3 flex items-center gap-3">
+        <Smartphone size={32} className="text-yellow-500" /> Carrera de Dedos
+      </h1>
+      <p className="text-gray-500 mb-8 text-center max-w-xs">
+        Toca tan rápido como puedas cuando la luz esté **VERDE**. ¡Alto en **ROJO**!
+      </p>
+
+      {error && (
+        <div className="w-full p-3 mb-4 bg-red-100 border border-red-400 text-red-700 rounded-lg font-medium text-sm flex items-center">
+          <AlertOctagon size={18} className="mr-2" />
+          {error}
         </div>
       )}
 
+      {/* Entrada de Nombre */}
+      <div className="w-full mb-4">
+        <label htmlFor="playerName" className="block text-sm font-medium text-gray-700 mb-1">Tu Nombre/Alias</label>
+        <input
+          id="playerName"
+          type="text"
+          value={playerName}
+          onChange={(e) => setPlayerName(e.target.value)}
+          placeholder="Ej: Rayo McQueen"
+          className="w-full p-3 border border-gray-300 rounded-lg shadow-sm focus:ring-yellow-500 focus:border-yellow-500 text-lg"
+          maxLength={15}
+        />
+      </div>
+
+      {/* Botones de Acción */}
+      <div className="w-full space-y-4">
+        <button 
+          onClick={createRoom}
+          className="w-full bg-yellow-500 text-white p-4 rounded-xl font-black text-lg shadow-md hover:bg-yellow-600 transition-colors flex items-center justify-center gap-2"
+        >
+          <Users size={20} /> Crear Nueva Sala
+        </button>
+
+        <div className="flex items-center space-x-2">
+          <input
+            type="text"
+            value={roomCode}
+            onChange={(e) => setRoomCode(e.target.value.toUpperCase())}
+            placeholder="CÓDIGO (ej: ABCD)"
+            className="flex-grow p-4 border border-gray-300 rounded-xl shadow-sm text-center font-mono uppercase text-xl"
+            maxLength={4}
+          />
+          <button 
+            onClick={joinRoom}
+            className="bg-blue-600 text-white p-4 rounded-xl font-black text-lg shadow-md hover:bg-blue-700 transition-colors flex items-center justify-center gap-2"
+          >
+            <Footprints size={20} /> Unirse
+          </button>
+        </div>
+      </div>
+      
+      <p className="mt-8 text-xs text-gray-400 text-center">
+        <span className="font-bold">Estado:</span> {isAuthReady ? 'Autenticación Lista' : 'Cargando Auth...'}
+        <br/>
+        <span className="font-bold">Mi ID:</span> {userId || 'N/A'}
+      </p>
+    </div>
+  );
+
+  const renderView = () => {
+    switch (view) {
+      case 'lobby':
+        return <LobbyView />;
+      case 'game':
+        return <GameView />;
+      case 'winner':
+        return <WinnerView />;
+      case 'menu':
+      default:
+        return <MenuView />;
+    }
+  };
+
+  return (
+    <div className="min-h-screen bg-gray-100 flex items-center justify-center p-4 font-sans">
+      <div className="w-full max-w-md">
+        {renderView()}
+      </div>
     </div>
   );
 }
