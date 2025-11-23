@@ -1,36 +1,24 @@
 import React, { useState, useEffect, useRef } from 'react';
-import { initializeApp } from 'firebase/app';
+import { auth, db } from './firebase'; 
 import { 
-  getAuth, 
   signInAnonymously, 
   onAuthStateChanged,
   signInWithCustomToken
 } from 'firebase/auth';
 import { 
-  getFirestore, 
   doc, 
   setDoc, 
   getDoc, 
   onSnapshot, 
   updateDoc, 
   increment,
-  serverTimestamp,
-  deleteField
+  serverTimestamp
 } from 'firebase/firestore';
 import { Play, Zap, Trophy, AlertOctagon, Footprints, Users, Smartphone } from 'lucide-react';
 
-// --- Configuración de Firebase ---
-// Las credenciales de Firebase se asumen inyectadas en este entorno.
-const firebaseConfig = {
-  // Datos simulados ya que en este archivo no se usan las variables globales
-  projectId: "carrerasx-7fec8",
-  appId: "1:80002686454:web:1b154a10cf63b5d071fbd7"
-};
-const app = initializeApp(firebaseConfig);
-const auth = getAuth(app);
-const db = getFirestore(app);
-// Usamos el ID fijo de la otra versión para asegurar consistencia
-const appId = 'carrera-dedos-produccion'; 
+// --- Configuración Global ---
+// Usa un ID de aplicación fijo para la colección de Firestore
+const appId = typeof __app_id !== 'undefined' ? __app_id : 'default-app-id'; 
 
 // --- Avatares y Colores ---
 const AVATARS = ["🚗", "🏍️", "🏃", "🐎", "🚀", "🛹", "🦖", "🐕"];
@@ -49,7 +37,7 @@ export default function FingerRaceGame() {
   
   // Estados del Juego
   const [isHost, setIsHost] = useState(false);
-  const [gameState, setGameState] = useState('waiting'); // waiting, racing, finished
+  const [gameState, setGameState] = useState('loading'); // loading, waiting, racing, finished
   const [trafficLight, setTrafficLight] = useState('green'); // green, red
   const [players, setPlayers] = useState({}); // Objeto { uid: { name, score, avatar, color, stunned } }
   const [winnerName, setWinnerName] = useState(null);
@@ -58,23 +46,38 @@ export default function FingerRaceGame() {
   // Refs para lógica del Host
   const trafficTimerRef = useRef(null);
 
-  // 1. Autenticación
+  // 1. Autenticación e Inicialización
   useEffect(() => {
     const initAuth = async () => {
-      // Nota: Este archivo no tiene acceso a __initial_auth_token ni a __firebase_config, 
-      // por lo que usamos signInAnonymously como fallback.
-      await signInAnonymously(auth);
+      try {
+        if (typeof __initial_auth_token !== 'undefined') {
+          // Usar el token personalizado provisto por el entorno
+          await signInWithCustomToken(auth, __initial_auth_token);
+        } else {
+          // Si no hay token, iniciar sesión anónimamente
+          await signInAnonymously(auth);
+        }
+      } catch (e) {
+        console.error("Error al autenticar:", e);
+        setError("Error de autenticación. Revisa la consola.");
+      }
     };
     initAuth();
-    return onAuthStateChanged(auth, (u) => setUser(u));
+    
+    // Listener de estado de autenticación
+    return onAuthStateChanged(auth, (u) => {
+      setUser(u);
+      if (u) {
+        setGameState('waiting'); // Solo cambiar de 'loading' si hay un usuario
+      }
+    });
   }, []);
 
   // 2. Sincronización de Sala (Firestore Listener)
   useEffect(() => {
-    if (!user || !roomCode) return;
+    if (!user || !roomCode || gameState === 'loading') return;
 
-    // FIX: Se corrige el path de 5 segmentos a 6, añadiendo 'race_rooms' como colección
-    // Path deseado: artifacts/{appId}/public/data/race_rooms/{roomCode}
+    // FIX: Ruta de Firestore: artifacts/{appId}/public/data/race_rooms/{roomCode}
     const roomRef = doc(db, 'artifacts', appId, 'public', 'data', 'race_rooms', roomCode);
     
     const unsubscribe = onSnapshot(roomRef, (docSnap) => {
@@ -86,23 +89,26 @@ export default function FingerRaceGame() {
         setWinnerName(data.winnerName);
         
         // Navegación automática basada en estado
-        if (data.status === 'waiting') setView('lobby');
-        if (data.status === 'racing') setView('game');
-        if (data.status === 'finished') setView('winner');
+        if (data.status === 'waiting' && view !== 'lobby') setView('lobby');
+        if (data.status === 'racing' && view !== 'game') setView('game');
+        if (data.status === 'finished' && view !== 'winner') setView('winner');
 
       } else {
         // Si la sala se borra o no existe
         setRoomCode('');
         setView('menu');
-        setError("La sala se ha cerrado.");
+        if(gameState !== 'waiting') setError("La sala se ha cerrado.");
       }
+    }, (error) => {
+      console.error("Error al escuchar la sala:", error);
+      setError("Error de conexión con la sala.");
     });
 
     return () => {
       unsubscribe();
       if (trafficTimerRef.current) clearTimeout(trafficTimerRef.current);
     };
-  }, [user, roomCode]);
+  }, [user, roomCode, gameState]);
 
   // 3. Lógica del Semáforo (Solo Host)
   useEffect(() => {
@@ -115,7 +121,7 @@ export default function FingerRaceGame() {
         : Math.random() * 2000 + 1000; // Rojo: 1-3 segundos
 
       // Actualizar Firestore
-      const roomRef = doc(db, 'artifacts', appId, 'public', 'data', 'race_rooms', roomCode); // FIX aplicado
+      const roomRef = doc(db, 'artifacts', appId, 'public', 'data', 'race_rooms', roomCode); 
       updateDoc(roomRef, { trafficLight: nextColor });
 
       trafficTimerRef.current = setTimeout(() => {
@@ -136,62 +142,96 @@ export default function FingerRaceGame() {
   // --- Funciones: Crear / Unirse ---
 
   const createRoom = async () => {
+    if (!user) return setError("Usuario no autenticado.");
     if (!playerName) return setError("¡Necesitas un nombre!");
     const code = Math.random().toString(36).substring(2, 6).toUpperCase();
-    const roomRef = doc(db, 'artifacts', appId, 'public', 'data', 'race_rooms', code); // FIX aplicado
+    const roomRef = doc(db, 'artifacts', appId, 'public', 'data', 'race_rooms', code); 
     
+    // Obtener un avatar y color que no esté en uso (si la sala ya existía - muy improbable aquí)
+    const availableAvatars = AVATARS;
+    const availableColors = COLORS;
+    const randomAvatar = availableAvatars[Math.floor(Math.random() * availableAvatars.length)];
+    const randomColor = availableColors[Math.floor(Math.random() * availableColors.length)];
+
     const myPlayer = {
       name: playerName,
       score: 0,
-      avatar: AVATARS[0],
-      color: COLORS[0],
+      avatar: randomAvatar,
+      color: randomColor,
       stunned: false
     };
 
-    await setDoc(roomRef, {
-      hostId: user.uid,
-      status: 'waiting',
-      trafficLight: 'green',
-      createdAt: serverTimestamp(),
-      players: { [user.uid]: myPlayer }
-    });
+    try {
+        await setDoc(roomRef, {
+          hostId: user.uid,
+          status: 'waiting',
+          trafficLight: 'green',
+          createdAt: serverTimestamp(),
+          players: { [user.uid]: myPlayer }
+        });
+    } catch (e) {
+        console.error("Error al crear la sala:", e);
+        return setError("No se pudo crear la sala. Inténtalo de nuevo.");
+    }
+
 
     setIsHost(true);
     setRoomCode(code);
+    setError('');
+    setView('lobby'); // Asegurar la vista de lobby después de crear
   };
 
   const joinRoom = async () => {
+    if (!user) return setError("Usuario no autenticado.");
     if (!playerName) return setError("¡Necesitas un nombre!");
-    if (!roomCode) return setError("Código inválido");
+    if (!roomCode || roomCode.length !== 4) return setError("Código debe tener 4 letras");
     const code = roomCode.toUpperCase();
-    const roomRef = doc(db, 'artifacts', appId, 'public', 'data', 'race_rooms', code); // FIX aplicado
+    const roomRef = doc(db, 'artifacts', appId, 'public', 'data', 'race_rooms', code); 
     
-    const snap = await getDoc(roomRef);
-    if (!snap.exists()) return setError("Sala no encontrada");
-    if (snap.data().status !== 'waiting') return setError("La carrera ya empezó");
+    try {
+        const snap = await getDoc(roomRef);
+        if (!snap.exists()) return setError("Sala no encontrada");
+        if (snap.data().status !== 'waiting') return setError("La carrera ya empezó");
 
-    // Asignar avatar/color aleatorio
-    const randomAvatar = AVATARS[Math.floor(Math.random() * AVATARS.length)];
-    const randomColor = COLORS[Math.floor(Math.random() * COLORS.length)];
+        // Asignar avatar/color aleatorio (evitando duplicados si es posible)
+        const currentPlayers = snap.data().players || {};
+        const usedAvatars = Object.values(currentPlayers).map(p => p.avatar);
+        const availableAvatars = AVATARS.filter(a => !usedAvatars.includes(a));
+        const finalAvatar = availableAvatars.length > 0 
+          ? availableAvatars[Math.floor(Math.random() * availableAvatars.length)]
+          : AVATARS[Math.floor(Math.random() * AVATARS.length)];
 
-    await updateDoc(roomRef, {
-      [`players.${user.uid}`]: {
-        name: playerName,
-        score: 0,
-        avatar: randomAvatar,
-        color: randomColor,
-        stunned: false
-      }
-    });
+        const usedColors = Object.values(currentPlayers).map(p => p.color);
+        const availableColors = COLORS.filter(c => !usedColors.includes(c));
+        const finalColor = availableColors.length > 0 
+          ? availableColors[Math.floor(Math.random() * availableColors.length)]
+          : COLORS[Math.floor(Math.random() * COLORS.length)];
 
-    setIsHost(false);
-    setRoomCode(code);
+
+        await updateDoc(roomRef, {
+          [`players.${user.uid}`]: {
+            name: playerName,
+            score: 0,
+            avatar: finalAvatar,
+            color: finalColor,
+            stunned: false
+          }
+        });
+
+        setIsHost(false);
+        setRoomCode(code);
+        setError('');
+        setView('lobby'); // Asegurar la vista de lobby después de unirse
+    } catch (e) {
+        console.error("Error al unirse a la sala:", e);
+        setError("No se pudo unir a la sala. Inténtalo de nuevo.");
+    }
   };
 
   // --- Funciones: Juego ---
 
   const startGame = async () => {
-    const roomRef = doc(db, 'artifacts', appId, 'public', 'data', 'race_rooms', roomCode); // FIX aplicado
+    const roomRef = doc(db, 'artifacts', appId, 'public', 'data', 'race_rooms', roomCode); 
     // Resetear scores por si acaso
     const resetPlayers = {};
     Object.keys(players).forEach(uid => {
@@ -209,7 +249,7 @@ export default function FingerRaceGame() {
   const handleRunClick = async () => {
     if (myPenalty) return; // Bloqueo local por penalización
 
-    const roomRef = doc(db, 'artifacts', appId, 'public', 'data', 'race_rooms', roomCode); // FIX aplicado
+    const roomRef = doc(db, 'artifacts', appId, 'public', 'data', 'race_rooms', roomCode); 
     
     if (trafficLight === 'red') {
       // PENALIZACIÓN
@@ -224,12 +264,12 @@ export default function FingerRaceGame() {
       // AVANCE
       // Verificar localmente si ganamos para evitar llamadas extra
       const currentScore = players[user.uid]?.score || 0;
-      if (currentScore >= 100) {
+      if (currentScore >= 98) { // 98 porque el incremento es de 2
         // Hemos ganado
         await updateDoc(roomRef, {
           status: 'finished',
           winnerName: playerName,
-          [`players.${user.uid}.score`]: 100
+          [`players.${user.uid}.score`]: 100 // Fijar a 100
         });
       } else {
         await updateDoc(roomRef, {
@@ -240,7 +280,7 @@ export default function FingerRaceGame() {
   };
 
   const resetGame = async () => {
-    const roomRef = doc(db, 'artifacts', appId, 'public', 'data', 'race_rooms', roomCode); // FIX aplicado
+    const roomRef = doc(db, 'artifacts', appId, 'public', 'data', 'race_rooms', roomCode); 
     // Reset scores
     const resetPlayers = {};
     Object.keys(players).forEach(uid => {
@@ -257,7 +297,10 @@ export default function FingerRaceGame() {
   const getPlayerList = () => Object.entries(players).map(([id, data]) => ({ id, ...data }));
 
   // --- Renderizado ---
-  if (!user) return <div className="h-screen w-full flex items-center justify-center bg-slate-900 text-white">Cargando motores...</div>;
+  if (!user || gameState === 'loading') return <div className="h-screen w-full flex flex-col items-center justify-center bg-slate-900 text-white">
+     <div className="w-12 h-12 border-4 border-yellow-500 border-t-transparent rounded-full animate-spin mb-4"></div>
+     Cargando motores...
+  </div>;
 
   return (
     <div className={`min-h-screen font-sans transition-colors duration-300 ease-in-out overflow-hidden flex flex-col ${
@@ -285,6 +328,7 @@ export default function FingerRaceGame() {
           <div className="text-center space-y-2 mb-8">
             <h2 className="text-4xl font-bold text-white">¡A correr!</h2>
             <p className="text-slate-400">Usa tu móvil como mando. <br/>¡Cuidado con la luz roja!</p>
+            <p className="text-xs text-slate-500 pt-4">ID de Usuario: {user.uid}</p>
           </div>
 
           <input
@@ -303,7 +347,7 @@ export default function FingerRaceGame() {
           <div className="w-full flex gap-2">
             <input
               type="text"
-              placeholder="CÓDIGO"
+              placeholder="CÓDIGO (Ej: ABCD)"
               value={roomCode}
               onChange={e => setRoomCode(e.target.value.toUpperCase())}
               maxLength={4}
@@ -313,7 +357,7 @@ export default function FingerRaceGame() {
               Unirse
             </button>
           </div>
-          {error && <p className="text-red-400 text-sm">{error}</p>}
+          {error && <p className="text-red-400 text-sm mt-4 p-2 bg-red-900/50 rounded-lg">{error}</p>}
         </div>
       )}
 
@@ -330,6 +374,8 @@ export default function FingerRaceGame() {
                 <div key={p.id} className={`${p.color} p-3 rounded-xl flex flex-col items-center justify-center text-white shadow-lg animate-in zoom-in duration-300`}>
                   <span className="text-3xl mb-1">{p.avatar}</span>
                   <span className="font-bold text-sm truncate max-w-full">{p.name}</span>
+                  {p.id === user.uid && <span className="text-xs bg-black/20 px-2 rounded-full mt-1">Tú</span>}
+                  {p.id === Object.values(players).find(p => p.id === p.hostId) && <span className="text-xs bg-yellow-400 text-black px-2 rounded-full mt-1">Host</span>}
                 </div>
               ))}
             </div>
@@ -338,14 +384,19 @@ export default function FingerRaceGame() {
               {isHost ? (
                 <button 
                   onClick={startGame}
-                  className="w-full bg-green-500 hover:bg-green-400 text-black font-black text-xl p-4 rounded-xl shadow-lg shadow-green-500/20 transition-transform active:scale-95 flex items-center justify-center gap-2"
+                  disabled={getPlayerList().length < 1}
+                  className={`w-full font-black text-xl p-4 rounded-xl shadow-lg shadow-green-500/20 transition-transform active:scale-95 flex items-center justify-center gap-2
+                    ${getPlayerList().length < 1 
+                        ? 'bg-gray-600 opacity-50 cursor-not-allowed' 
+                        : 'bg-green-500 hover:bg-green-400 text-black'
+                    }`}
                 >
                   <Play fill="currentColor" /> EMPEZAR CARRERA
                 </button>
               ) : (
                 <div className="text-center text-slate-400 animate-pulse flex flex-col items-center gap-2">
                   <div className="w-8 h-8 border-4 border-blue-500 border-t-transparent rounded-full animate-spin"></div>
-                  Esperando al anfitrión...
+                  Esperando al anfitrión ({Object.values(players).find(p => p.hostId === user.uid)?.name || '...'})...
                 </div>
               )}
             </div>
@@ -353,7 +404,7 @@ export default function FingerRaceGame() {
         </div>
       )}
 
-      {/* --- JUEGO (HOST VIEW) --- */}
+      {/* --- JUEGO (HOST VIEW - Muestra la pista) --- */}
       {view === 'game' && isHost && (
         <div className="flex-1 flex flex-col p-2 sm:p-6 max-w-4xl mx-auto w-full overflow-hidden">
           {/* Semáforo gigante */}
@@ -371,7 +422,9 @@ export default function FingerRaceGame() {
                 <span className="absolute -bottom-6 text-xs text-white font-mono">META</span>
             </div>
 
-            {getPlayerList().map((p) => (
+            {getPlayerList()
+              .sort((a, b) => b.score - a.score) // Ordenar por score para mejor visualización
+              .map((p) => (
               <div key={p.id} className="relative h-12 w-full bg-black/20 rounded-full flex items-center px-2 z-10">
                 {/* Nombre flotante */}
                 <span className="absolute left-2 text-xs text-white/50 font-mono pointer-events-none z-0">{p.name}</span>
@@ -384,15 +437,18 @@ export default function FingerRaceGame() {
                   <div className={`${p.color} w-10 h-10 rounded-full flex items-center justify-center shadow-lg text-xl border-2 border-white`}>
                     {p.avatar}
                   </div>
-                  {p.score < 0 && <span className="text-xs text-red-500 font-bold">¡CAÍDA!</span>}
+                  {p.score < 0 && <span className="text-xs text-red-500 font-bold bg-black/50 px-1 rounded">¡CAÍDA!</span>}
                 </div>
               </div>
             ))}
           </div>
+          <div className="mt-4 text-center text-slate-400">
+            <Smartphone size={16} className="inline mr-1" /> Pide a tus jugadores que pulsen "RUN!"
+          </div>
         </div>
       )}
 
-      {/* --- JUEGO (CLIENT VIEW) --- */}
+      {/* --- JUEGO (CLIENT VIEW - Es el "Mando") --- */}
       {view === 'game' && !isHost && (
         <div className="flex-1 flex flex-col items-center justify-center p-6 pb-12">
           
