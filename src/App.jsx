@@ -335,7 +335,22 @@ export default function FingerRaceGame() {
           <input
             ref={codeInputRef}
             value={roomCode}
-            onChange={(e)=>{ setRoomCode(e.target.value); setError(''); }}
+            onChange={(e)=>{
+              // NO CAMBIAR A MAYÚSCULAS AQUI — EVITA RE-RENDER Y PÉRDIDA DE FOCUS
+              setRoomCode(e.target.value.replace(/[^a-zA-Z0-9]/g, ''));
+              setError('');
+            }}
+            onFocus={() => setError('')}
+            onBlur={(e)=>{
+              // SOLO AL SALIR DEL INPUT LO PASAMOS A MAYÚSCULAS
+              setRoomCode(e.target.value.toUpperCase());
+            }}
+            placeholder="CÓDIGO"
+            maxLength={4}
+            inputMode="text"
+            autoComplete="off"
+            className="flex-1 p-3 border rounded-xl text-center font-mono focus:ring-2 focus:ring-blue-400 outline-none"
+          />{ setRoomCode(e.target.value); setError(''); }}
             onBlur={(e)=>setRoomCode(e.target.value.toUpperCase())}
             placeholder="CÓDIGO"
             maxLength={4}
