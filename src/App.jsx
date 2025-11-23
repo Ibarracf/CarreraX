@@ -783,10 +783,7 @@ export default function FingerRaceGame() {
 >
   Unirse
 </button>
-    </div>
-      </div>
-
-      <p className="mt-4 text-xs text-gray-400">Autenticación: {isAuthReady? 'Lista' : 'Cargando...' } — Tu ID: {userId || 'N/A'}</p>
+</div>
     </div>
   );
 
