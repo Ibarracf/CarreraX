@@ -476,7 +476,7 @@ export default function FingerRaceGame() {
     </div>
   );
 
-  // --- Render principal ---
+  // --- Render principal --- 
   return (
     <div className="min-h-screen bg-gray-100 p-6 font-sans">
       <AnimatePresence mode="wait">
