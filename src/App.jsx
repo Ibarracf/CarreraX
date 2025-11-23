@@ -314,46 +314,18 @@ export default function FingerRaceGame() {
 
       <label className="block text-sm font-medium text-gray-700">Tu nombre</label>
       <input
-        ref={nameInputRef}
-        value={playerName}
-        onChange={(e)=>{ setPlayerName(e.target.value); setError(''); }}
-        onFocus={() => setError('')}
-        className="w-full p-3 border rounded-lg mb-3 focus:ring-2 focus:ring-yellow-400 outline-none"
-        placeholder="Ej: Rayo"
-        maxLength={18}
-        autoFocus
-      />
-
-      <label className="block text-sm font-medium text-gray-700 mb-2">Elige tu avatar</label>
-      <AvatarPicker />
-
-      {error && <div className="mt-4 p-3 rounded bg-red-100 text-red-700">{error}</div>}
-
-      <div className="mt-4 grid grid-cols-1 gap-3">
-        <button onMouseDown={(e)=>e.preventDefault()} onClick={createRoom} className="bg-yellow-500 text-white p-3 rounded-xl font-bold">Crear Sala</button>
-        <div className="flex gap-2">
-          <input
             ref={codeInputRef}
             value={roomCode}
             onChange={(e)=>{
-              // NO CAMBIAR A MAYÚSCULAS AQUI — EVITA RE-RENDER Y PÉRDIDA DE FOCUS
-              setRoomCode(e.target.value.replace(/[^a-zA-Z0-9]/g, ''));
+              const v = e.target.value.replace(/[^a-zA-Z0-9]/g, '');
+              setRoomCode(v);
               setError('');
             }}
             onFocus={() => setError('')}
-            onBlur={(e)=>{
-              // SOLO AL SALIR DEL INPUT LO PASAMOS A MAYÚSCULAS
-              setRoomCode(e.target.value.toUpperCase());
-            }}
+            onBlur={(e)=> setRoomCode(e.target.value.toUpperCase())}
             placeholder="CÓDIGO"
             maxLength={4}
-            inputMode="text"
             autoComplete="off"
-            className="flex-1 p-3 border rounded-xl text-center font-mono focus:ring-2 focus:ring-blue-400 outline-none"
-          />{ setRoomCode(e.target.value); setError(''); }}
-            onBlur={(e)=>setRoomCode(e.target.value.toUpperCase())}
-            placeholder="CÓDIGO"
-            maxLength={4}
             className="flex-1 p-3 border rounded-xl text-center font-mono focus:ring-2 focus:ring-blue-400 outline-none"
           />
           <button onMouseDown={(e)=>e.preventDefault()} onClick={joinRoom} className="bg-blue-600 text-white p-3 rounded-xl">Unirse</button>
@@ -476,7 +448,7 @@ export default function FingerRaceGame() {
     </div>
   );
 
-  // --- Render principal --- 
+  // --- Render principal ---
   return (
     <div className="min-h-screen bg-gray-100 p-6 font-sans">
       <AnimatePresence mode="wait">
