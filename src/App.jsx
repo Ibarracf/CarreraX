@@ -1,12 +1,13 @@
 import React, { useState, useEffect, useRef } from 'react';
-// Importamos nuestras instancias configuradas desde el archivo local
-import { auth, db } from './firebase'; 
+import { initializeApp } from 'firebase/app';
 import { 
+  getAuth, 
   signInAnonymously, 
   onAuthStateChanged,
   signInWithCustomToken
 } from 'firebase/auth';
 import { 
+  getFirestore, 
   doc, 
   setDoc, 
   getDoc, 
@@ -18,8 +19,17 @@ import {
 } from 'firebase/firestore';
 import { Play, Zap, Trophy, AlertOctagon, Footprints, Users, Smartphone } from 'lucide-react';
 
-// --- Configuración Global ---
-// Usa un ID de aplicación fijo para la colección de Firestore
+// --- Configuración de Firebase ---
+// Las credenciales de Firebase se asumen inyectadas en este entorno.
+const firebaseConfig = {
+  // Datos simulados ya que en este archivo no se usan las variables globales
+  projectId: "carrerasx-7fec8",
+  appId: "1:80002686454:web:1b154a10cf63b5d071fbd7"
+};
+const app = initializeApp(firebaseConfig);
+const auth = getAuth(app);
+const db = getFirestore(app);
+// Usamos el ID fijo de la otra versión para asegurar consistencia
 const appId = 'carrera-dedos-produccion'; 
 
 // --- Avatares y Colores ---
@@ -51,7 +61,8 @@ export default function FingerRaceGame() {
   // 1. Autenticación
   useEffect(() => {
     const initAuth = async () => {
-      // En una app real, si no hay token, iniciamos sesión anónimamente.
+      // Nota: Este archivo no tiene acceso a __initial_auth_token ni a __firebase_config, 
+      // por lo que usamos signInAnonymously como fallback.
       await signInAnonymously(auth);
     };
     initAuth();
@@ -62,8 +73,9 @@ export default function FingerRaceGame() {
   useEffect(() => {
     if (!user || !roomCode) return;
 
-    // La referencia apunta a una colección pública usando el appId fijo
-    const roomRef = doc(db, 'artifacts', appId, 'public', 'data', `race_${roomCode}`);
+    // FIX: Se corrige el path de 5 segmentos a 6, añadiendo 'race_rooms' como colección
+    // Path deseado: artifacts/{appId}/public/data/race_rooms/{roomCode}
+    const roomRef = doc(db, 'artifacts', appId, 'public', 'data', 'race_rooms', roomCode);
     
     const unsubscribe = onSnapshot(roomRef, (docSnap) => {
       if (docSnap.exists()) {
@@ -82,7 +94,7 @@ export default function FingerRaceGame() {
         // Si la sala se borra o no existe
         setRoomCode('');
         setView('menu');
-        if(gameState !== 'waiting') setError("La sala se ha cerrado.");
+        setError("La sala se ha cerrado.");
       }
     });
 
@@ -103,7 +115,7 @@ export default function FingerRaceGame() {
         : Math.random() * 2000 + 1000; // Rojo: 1-3 segundos
 
       // Actualizar Firestore
-      const roomRef = doc(db, 'artifacts', appId, 'public', 'data', `race_${roomCode}`);
+      const roomRef = doc(db, 'artifacts', appId, 'public', 'data', 'race_rooms', roomCode); // FIX aplicado
       updateDoc(roomRef, { trafficLight: nextColor });
 
       trafficTimerRef.current = setTimeout(() => {
@@ -126,7 +138,7 @@ export default function FingerRaceGame() {
   const createRoom = async () => {
     if (!playerName) return setError("¡Necesitas un nombre!");
     const code = Math.random().toString(36).substring(2, 6).toUpperCase();
-    const roomRef = doc(db, 'artifacts', appId, 'public', 'data', `race_${code}`);
+    const roomRef = doc(db, 'artifacts', appId, 'public', 'data', 'race_rooms', code); // FIX aplicado
     
     const myPlayer = {
       name: playerName,
@@ -146,14 +158,13 @@ export default function FingerRaceGame() {
 
     setIsHost(true);
     setRoomCode(code);
-    setError('');
   };
 
   const joinRoom = async () => {
     if (!playerName) return setError("¡Necesitas un nombre!");
     if (!roomCode) return setError("Código inválido");
     const code = roomCode.toUpperCase();
-    const roomRef = doc(db, 'artifacts', appId, 'public', 'data', `race_${code}`);
+    const roomRef = doc(db, 'artifacts', appId, 'public', 'data', 'race_rooms', code); // FIX aplicado
     
     const snap = await getDoc(roomRef);
     if (!snap.exists()) return setError("Sala no encontrada");
@@ -175,13 +186,12 @@ export default function FingerRaceGame() {
 
     setIsHost(false);
     setRoomCode(code);
-    setError('');
   };
 
   // --- Funciones: Juego ---
 
   const startGame = async () => {
-    const roomRef = doc(db, 'artifacts', appId, 'public', 'data', `race_${roomCode}`);
+    const roomRef = doc(db, 'artifacts', appId, 'public', 'data', 'race_rooms', roomCode); // FIX aplicado
     // Resetear scores por si acaso
     const resetPlayers = {};
     Object.keys(players).forEach(uid => {
@@ -199,7 +209,7 @@ export default function FingerRaceGame() {
   const handleRunClick = async () => {
     if (myPenalty) return; // Bloqueo local por penalización
 
-    const roomRef = doc(db, 'artifacts', appId, 'public', 'data', `race_${roomCode}`);
+    const roomRef = doc(db, 'artifacts', appId, 'public', 'data', 'race_rooms', roomCode); // FIX aplicado
     
     if (trafficLight === 'red') {
       // PENALIZACIÓN
@@ -230,7 +240,7 @@ export default function FingerRaceGame() {
   };
 
   const resetGame = async () => {
-    const roomRef = doc(db, 'artifacts', appId, 'public', 'data', `race_${roomCode}`);
+    const roomRef = doc(db, 'artifacts', appId, 'public', 'data', 'race_rooms', roomCode); // FIX aplicado
     // Reset scores
     const resetPlayers = {};
     Object.keys(players).forEach(uid => {
@@ -473,4 +483,3 @@ export default function FingerRaceGame() {
     </div>
   );
 }
-
