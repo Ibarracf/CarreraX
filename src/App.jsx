@@ -11,9 +11,10 @@ import {
 } from 'firebase/auth';
 import { 
   doc, setDoc, getDoc, onSnapshot, updateDoc, increment,
-  serverTimestamp, deleteField, runTransaction, onDisconnect
+  serverTimestamp, deleteField, runTransaction
 } from 'firebase/firestore';
 
+import { onDisconnect } from "firebase/database";
 const AVATARS = ["Car", "Motorcycle", "Runner", "Horse", "Rocket", "Skateboard", "Dino", "Dog"];
 const COLORS = [
   "bg-red-500", "bg-blue-500", "bg-green-500", "bg-yellow-500", 
