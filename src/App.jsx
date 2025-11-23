@@ -776,8 +776,14 @@ export default function FingerRaceGame() {
             autoComplete="off"
             className="flex-1 p-3 border rounded-xl text-center font-mono focus:ring-2 focus:ring-blue-400 outline-none"
           />
-          <button onMouseDown={(e)=>e.preventDefault()} onClick={joinRoom} className="bg-blue-600 text-white p-3 rounded-xl">Unirse</button>
-        </div>
+  
+<button onMouseDown={(e) => e.preventDefault()}
+  onClick={joinRoom}
+  className="bg-blue-600 text-white p-3 rounded-xl"
+>
+  Unirse
+</button>
+    </div>
       </div>
 
       <p className="mt-4 text-xs text-gray-400">Autenticación: {isAuthReady? 'Lista' : 'Cargando...' } — Tu ID: {userId || 'N/A'}</p>
