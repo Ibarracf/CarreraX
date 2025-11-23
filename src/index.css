@@ -1,0 +1,10 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/* Añade cualquier estilo global aquí si lo necesitas. */
+/* Por ejemplo, para asegurar que el cuerpo ocupe toda la pantalla: */
+body {
+    margin: 0;
+        padding: 0;
+        }
