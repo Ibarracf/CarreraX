@@ -45,6 +45,7 @@ export default function FingerRaceGame() {
   const [playerName, setPlayerName] = useState('');
   const [error, setError] = useState('');
   const [selectedAvatarIndex, setSelectedAvatarIndex] = useState(0);
+  const [selectedColorIndex, setSelectedColorIndex] = useState(0);
 
   const [isHost, setIsHost] = useState(false);
   const [gameState, setGameState] = useState('waiting');
@@ -106,6 +107,8 @@ export default function FingerRaceGame() {
     if (!playerName.trim()) return setError('Ingresa tu nombre');
     const code = Math.random().toString(36).substring(2, 6).toUpperCase();
     const ref = getRoomRef(code);
+    const avatarIdx = selectedAvatarIndex >= 0 ? selectedAvatarIndex : 0;
+    const colorIdx = selectedColorIndex >= 0 ? selectedColorIndex : 0;
 
     try {
       await setDoc(ref, {
@@ -118,8 +121,8 @@ export default function FingerRaceGame() {
           [userId]: {
             name: playerName.trim(),
             score: 0,
-            avatar: AVATARES[selectedAvatarIndex].name,
-            color: COLORES[selectedAvatarIndex],
+            avatar: AVATARES[avatarIdx].name || '🚀',
+            color: COLORES[colorIdx] || 'from-purple-500 to-pink-500',
             stunned: false,
             isHost: true
           }
@@ -136,6 +139,8 @@ export default function FingerRaceGame() {
     if (!playerName.trim()) return setError('Ingresa tu nombre');
     if (roomCode.length !== 4) return setError('Código de 4 letras');
     const ref = getRoomRef(roomCode);
+    const avatarIdx = selectedAvatarIndex >= 0 ? selectedAvatarIndex : 0;
+    const colorIdx = selectedColorIndex >= 0 ? selectedColorIndex : 0;
     
     try {
       const snap = await getDoc(ref);
@@ -145,8 +150,8 @@ export default function FingerRaceGame() {
         [`players.${userId}`]: {
           name: playerName.trim(),
           score: 0,
-          avatar: AVATARES[selectedAvatarIndex].name,
-          color: COLORES[selectedAvatarIndex],
+          avatar: AVATARES[avatarIdx].name || '🚀',
+          color: COLORES[colorIdx] || 'from-purple-500 to-pink-500',
           stunned: false,
           isHost: false
         }
@@ -349,10 +354,13 @@ export default function FingerRaceGame() {
                   key={i}
                   whileHover={{ scale: 1.1 }}
                   whileTap={{ scale: 0.95 }}
-                  onClick={() => setSelectedAvatarIndex(i)}
+                  onClick={() => {
+                    setSelectedAvatarIndex(i);
+                    setSelectedColorIndex(i % COLORES.length);
+                  }}
                   className={`p-4 rounded-xl transition-all ${
                     selectedAvatarIndex === i 
-                      ? `bg-gradient-to-r ${COLORES[i]} ring-4 ring-white shadow-lg` 
+                      ? `bg-gradient-to-r ${COLORES[i % COLORES.length]} ring-4 ring-white shadow-lg` 
                       : 'bg-slate-700/50 hover:bg-slate-600/50'
                   }`}
                   title={a.label}
