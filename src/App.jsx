@@ -27,15 +27,14 @@ const COLORES = [
   "from-pink-500 to-rose-500", "from-teal-500 to-green-500"
 ];
 
-const TARGET_SCORE = 50; // Aumentado un poco para mejor jugabilidad
+const TARGET_SCORE = 50; 
 
 const getRoomRef = (code) => doc(db, 'rooms', code.toUpperCase());
 
 // ==========================================
-// COMPONENTES VISUALES (EXTRAÍDOS PARA EVITAR RE-RENDER)
+// COMPONENTES VISUALES
 // ==========================================
 
-// 1. MENU VIEW (Corregido foco y posición del botón)
 const MenuView = ({ 
   playerName, setPlayerName, inputCode, setInputCode, 
   createRoom, joinRoom, error, 
@@ -56,7 +55,6 @@ const MenuView = ({
         </motion.div>
 
         <motion.div className="bg-slate-800/80 backdrop-blur-xl rounded-3xl p-6 border border-purple-500/20 shadow-2xl space-y-5">
-          {/* Input Nombre */}
           <div>
             <label className="text-purple-300 text-xs font-bold uppercase tracking-wider mb-2 block">Tu Nombre</label>
             <input
@@ -68,7 +66,6 @@ const MenuView = ({
             />
           </div>
 
-          {/* Selector Avatar */}
           <div>
             <p className="text-purple-300 text-xs font-bold uppercase tracking-wider mb-2">Avatar</p>
             <div className="grid grid-cols-6 gap-2">
@@ -90,7 +87,6 @@ const MenuView = ({
             </div>
           )}
 
-          {/* Botones de Acción */}
           <div className="pt-2 space-y-4">
             <button
               onClick={createRoom}
@@ -105,7 +101,6 @@ const MenuView = ({
               <div className="flex-grow border-t border-slate-600"></div>
             </div>
 
-            {/* SECCIÓN CÓDIGO Y ENTRAR (Modificada: Columna) */}
             <div className="flex flex-col gap-3">
               <input
                 value={inputCode}
@@ -127,7 +122,6 @@ const MenuView = ({
   );
 };
 
-// 2. LOBBY VIEW
 const LobbyView = ({ roomCode, players, userId, isHost, startGame, leaveRoom }) => {
   const playerList = Object.entries(players).map(([id, p]) => ({ id, ...p }));
   
@@ -181,7 +175,6 @@ const LobbyView = ({ roomCode, players, userId, isHost, startGame, leaveRoom }) 
   );
 };
 
-// 3. GAME VIEW
 const GameView = ({ players, userId, trafficLight, handleTap, targetScore }) => {
   const sorted = Object.entries(players)
     .map(([id, p]) => ({ id, ...p }))
@@ -192,7 +185,6 @@ const GameView = ({ players, userId, trafficLight, handleTap, targetScore }) => 
 
   return (
     <div className="min-h-screen bg-slate-950 flex flex-col">
-      {/* HUD Superior */}
       <div className="bg-slate-900 p-4 shadow-lg border-b border-slate-800 z-10 sticky top-0">
         <div className="flex justify-center items-center gap-4">
           <div className={`text-6xl transition-transform duration-100 ${isRed ? 'scale-110 drop-shadow-[0_0_15px_rgba(239,68,68,0.8)]' : 'scale-90 opacity-50'}`}>🔴</div>
@@ -203,7 +195,6 @@ const GameView = ({ players, userId, trafficLight, handleTap, targetScore }) => 
         </p>
       </div>
 
-      {/* Pista de Carreras */}
       <div className="flex-1 overflow-y-auto p-4 pb-40 space-y-3">
         {sorted.map((p) => {
           const percent = Math.min(100, ((p.score || 0) / targetScore) * 100);
@@ -219,7 +210,6 @@ const GameView = ({ players, userId, trafficLight, handleTap, targetScore }) => 
                 <span className="font-mono text-sm text-slate-500">{p.score}m</span>
               </div>
               
-              {/* Barra de progreso */}
               <div className="h-3 bg-slate-950 rounded-full overflow-hidden relative">
                 <motion.div 
                   className={`h-full bg-gradient-to-r ${p.color}`}
@@ -229,7 +219,6 @@ const GameView = ({ players, userId, trafficLight, handleTap, targetScore }) => 
                 />
               </div>
 
-              {/* Indicador de Aturdido */}
               {p.stunned && (
                 <div className="absolute inset-0 bg-black/60 backdrop-blur-[1px] rounded-xl flex items-center justify-center z-20">
                   <span className="text-4xl animate-bounce">😵</span>
@@ -240,7 +229,6 @@ const GameView = ({ players, userId, trafficLight, handleTap, targetScore }) => 
         })}
       </div>
 
-      {/* Botón de TAP */}
       <div className="fixed bottom-0 left-0 w-full p-6 bg-gradient-to-t from-black via-black/90 to-transparent flex justify-center pb-8">
         <button
           onPointerDown={handleTap} 
@@ -249,7 +237,7 @@ const GameView = ({ players, userId, trafficLight, handleTap, targetScore }) => 
             currentPlayer?.stunned 
               ? 'bg-gray-600 cursor-not-allowed opacity-80' 
               : isRed 
-                ? 'bg-red-500 hover:bg-red-600' // Trampa visual: parece clickeable en rojo
+                ? 'bg-red-500 hover:bg-red-600'
                 : 'bg-green-500 hover:bg-green-400 active:bg-green-600'
           }`}
         >
@@ -260,7 +248,6 @@ const GameView = ({ players, userId, trafficLight, handleTap, targetScore }) => 
   );
 };
 
-// 4. WINNER VIEW
 const WinnerView = ({ winnerName, isHost, resetGame, leaveRoom }) => (
   <div className="min-h-screen bg-slate-900 flex items-center justify-center p-6">
     <motion.div 
@@ -298,14 +285,12 @@ export default function FingerRaceGame() {
   const [isAuthReady, setIsAuthReady] = useState(false);
   const [view, setView] = useState('menu');
   
-  // Estados de entrada
   const [roomCode, setRoomCode] = useState('');   
   const [inputCode, setInputCode] = useState(''); 
   const [playerName, setPlayerName] = useState('');
   const [selectedAvatarIndex, setSelectedAvatarIndex] = useState(0);
   const [selectedColorIndex, setSelectedColorIndex] = useState(0);
 
-  // Estados de juego
   const [error, setError] = useState('');
   const [isHost, setIsHost] = useState(false);
   const [gameState, setGameState] = useState('waiting');
@@ -315,7 +300,6 @@ export default function FingerRaceGame() {
 
   const trafficTimerRef = useRef(null);
 
-  // --- AUTH ---
   useEffect(() => {
     const unsub = onAuthStateChanged(auth, (u) => {
       if (u) { setUserId(u.uid); setIsAuthReady(true); }
@@ -324,15 +308,12 @@ export default function FingerRaceGame() {
     return () => unsub();
   }, []);
 
-  // --- LISTENER DE SALA MEJORADO ---
   useEffect(() => {
     if (!roomCode || !userId || !isAuthReady) return;
 
     const unsub = onSnapshot(getRoomRef(roomCode), (snap) => {
-      // 1. Manejo de Sala Eliminada / Host Desconectado totalmente
       if (!snap.exists()) {
-        alert("La sala ha sido cerrada por el host o expiró.");
-        leaveRoom(true); // true = forzar salida local
+        leaveRoom(true); 
         return;
       }
 
@@ -343,20 +324,31 @@ export default function FingerRaceGame() {
       setWinnerName(data.winnerName || null);
       setIsHost(data.hostId === userId);
 
-      // Sincronización de Vistas
+      // --- DETECTAR GANADOR ---
+      if (data.status === 'racing' && !data.winnerName && data.hostId === userId) {
+        const playerList = Object.values(data.players || {});
+        const winner = playerList.find(p => (p.score || 0) >= TARGET_SCORE);
+        
+        if (winner) {
+          updateDoc(getRoomRef(roomCode), {
+            status: 'finished',
+            winnerName: winner.name
+          });
+        }
+      }
+
       if (data.status === 'racing' && view !== 'game') setView('game');
       if (data.status === 'finished' && view !== 'winner') setView('winner');
       if (data.status === 'waiting' && view !== 'lobby') setView('lobby');
 
     }, (err) => {
       console.error(err);
-      setError('Conexión perdida');
+      setError('Conexión inestable');
     });
 
     return () => unsub();
   }, [roomCode, userId, isAuthReady, view]);
 
-  // --- ACCIONES ---
   const createRoom = async () => {
     if (!playerName.trim()) return setError('Ingresa tu nombre');
     const code = Math.random().toString(36).substring(2, 6).toUpperCase();
@@ -412,14 +404,12 @@ export default function FingerRaceGame() {
   };
 
   const leaveRoom = async (forceLocal = false) => {
-    // Si es forzado (ej. sala borrada), solo limpiamos local
     if (forceLocal) {
       setRoomCode(''); setInputCode(''); setView('menu');
       setPlayers({}); setWinnerName(null);
       return;
     }
 
-    // Si salimos voluntariamente, notificamos a DB
     if (roomCode && userId) {
       try {
         const ref = getRoomRef(roomCode);
@@ -431,11 +421,10 @@ export default function FingerRaceGame() {
           const p = { ...data.players };
           
           if (Object.keys(p).length <= 1) {
-            txn.delete(ref); // Soy el último, borro sala
+            txn.delete(ref); 
           } else {
-            delete p[userId]; // Me borro
+            delete p[userId]; 
             let updates = { players: p };
-            // Si soy host, paso la corona
             if (data.hostId === userId) {
               const nextId = Object.keys(p)[0];
               updates.hostId = nextId;
@@ -470,7 +459,6 @@ export default function FingerRaceGame() {
     } catch (e) { console.error(e); }
   };
 
-  // --- BUCLE DEL SEMÁFORO (Solo Host) ---
   const startTrafficLoop = () => {
     if (trafficTimerRef.current) clearInterval(trafficTimerRef.current);
     trafficTimerRef.current = setInterval(async () => {
@@ -481,64 +469,36 @@ export default function FingerRaceGame() {
           clearInterval(trafficTimerRef.current);
           return;
         }
-        // Lógica simple: cambiar luz
         const currentLight = snap.data().trafficLight;
         const nextLight = currentLight === 'green' ? 'red' : 'green';
-        // Tiempo random para la siguiente luz
         await updateDoc(ref, { trafficLight: nextLight });
       } catch (e) { console.error(e); }
-    }, 2000 + Math.random() * 2500); // 2 a 4.5 segundos
+    }, 2000 + Math.random() * 2500);
   };
 
-  // --- TAP DEL JUGADOR (MEJORADO) ---
   const handleTap = useCallback(async () => {
     if (gameState !== 'racing' || !userId) return;
+
     const myPlayer = players[userId];
-    if (myPlayer?.stunned) return; // Bloqueo local inmediato
-
-    try {
+    if (myPlayer?.stunned) {
       const ref = getRoomRef(roomCode);
-      await runTransaction(db, async (txn) => {
-        const snap = await txn.get(ref);
-        if (!snap.exists()) throw "Sala borrada";
-        
-        const data = snap.data();
-        if (data.status !== 'racing') return;
-        
-        const p = data.players[userId];
-        
-        // Lógica de Aturdimiento
-        if (p.stunned) {
-          // Si ya estaba aturdido y tapea, ¿quitamos el stun? 
-          // (En este diseño, el stun dura hasta que hace tap "correctivo" o pasa tiempo)
-          // Vamos a hacerlo simple: Tap en stun = Despertar
-          txn.update(ref, { [`players.${userId}.stunned`]: false });
-          return;
-        }
+      updateDoc(ref, { [`players.${userId}.stunned`]: false }).catch(console.error);
+      return;
+    }
 
-        // Si la luz es roja: CASTIGO
-        if (data.trafficLight === 'red') {
-          txn.update(ref, { 
-            [`players.${userId}.score`]: Math.max(0, p.score - 5),
-            [`players.${userId}.stunned`]: true 
-          });
-          return;
-        }
-
-        // Tap correcto
-        const newScore = p.score + 1;
-        if (newScore >= data.targetScore && !data.winnerName) {
-          txn.update(ref, { 
-            status: 'finished', 
-            winnerName: p.name, 
-            [`players.${userId}.score`]: data.targetScore 
-          });
-        } else {
-          txn.update(ref, { [`players.${userId}.score`]: increment(1) });
-        }
-      });
-    } catch (e) { console.log(e); }
-  }, [gameState, userId, players, roomCode]);
+    const ref = getRoomRef(roomCode);
+    
+    if (trafficLight === 'red') {
+      updateDoc(ref, {
+        [`players.${userId}.score`]: increment(-5),
+        [`players.${userId}.stunned`]: true
+      }).catch(console.error);
+    } else {
+      updateDoc(ref, {
+        [`players.${userId}.score`]: increment(1)
+      }).catch(console.error);
+    }
+  }, [gameState, userId, players, roomCode, trafficLight]);
 
   if (!isAuthReady) return <div className="h-screen bg-slate-900 flex items-center justify-center text-white">Cargando...</div>;
 
