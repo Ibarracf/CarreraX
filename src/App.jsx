@@ -167,46 +167,68 @@ export default function FingerRaceGame() {
 
   const startGame = () => updateDoc(getRoomRef(roomCode), { status: 'racing' });
   const resetGame = () => updateDoc(getRoomRef(roomCode), { status: 'waiting', winnerName: deleteField() });
-
   // === TAP ÉPICO ===
   const handleTap = useCallback(async () => {
-    if (gameState !== 'racing' || !roomCode) return;
-    const ref = getRoomRef(roomCode);
+  if (gameState !== 'racing' || !roomCode || !userId) return;
 
+  const roomRef = getRoomRef(roomCode);
+
+  try {
     await runTransaction(db, async (transaction) => {
-      const snap = await transaction.get(ref);
-      if (!snap.exists() || snap.data().status !== 'racing') return;
-      const data = snap.data();
-      const me = data.players[userId];
-      if (!me) return;
+      const roomSnap = await transaction.get(roomRef);
+      if (!roomSnap.exists()) throw "Sala no existe";
+      
+      const data = roomSnap.data();
+      if (data.status !== 'racing') return;
 
-      if (me.stunned) {
-        transaction.update(ref, { [`players.${userId}.stunned`]: false });
+      const player = data.players?.[userId];
+      if (!player) return;
+
+      // Si está aturdido → solo se des-aturde
+      if (player.stunned) {
+        transaction.update(roomRef, {
+          [`players.${userId}.stunned`]: false
+        });
         return;
       }
 
+      // Semáforo en rojo → penalización
       if (data.trafficLight === 'red') {
-        transaction.update(ref, {
-          [`players.${userId}.score`]: increment(-3),
+        transaction.update(roomRef, {
+          [`players.${userId}.score`]: Math.max(0, (player.score || 0) - 3),
           [`players.${userId}.stunned`]: true
         });
         return;
       }
 
-      const newScore = (me.score || 0) + 1;
+      // Avanzar normal
+      const newScore = (player.score || 0) + 1;
+
       if (newScore >= targetScore && !data.winnerName) {
-        transaction.update(ref, {
-          [`players.${userId}.score`]: targetScore,
+        // GANADOR
+        transaction.update(roomRef, {
           status: 'finished',
-          winnerName: me.name
+          winnerName: player.name,
+          [`players.${userId}.score`]: targetScore
         });
-        confetti({ particleCount: 300, spread: 100, origin: { y: 0.6 } });
+        confetti({
+          particleCount: 400,
+          spread: 100,
+          origin: { y: 0.6 }
+        });
       } else {
-        transaction.update(ref, { [`players.${userId}.score`]: increment(1) });
+        // Solo avanzar
+        transaction.update(roomRef, {
+          [`players.${userId}.score`]: increment(1)
+        });
       }
     });
-  }, [roomCode, gameState, userId]);
-
+  } catch (err) {
+    console.log("Tap ignorado (normal en juegos rápidos):", err);
+    // Esto es NORMAL cuando muchos tocan a la vez
+  }
+}, [roomCode, gameState, userId]);
+  
   // === VISTAS ===
   const MenuView = () => (
     <motion.div className="min-h-screen bg-gradient-to-br from-purple-600 via-pink-600 to-orange-500 flex items-center justify-center p-6">
