@@ -137,8 +137,7 @@ export default function FingerRaceGame() {
         }
       });
 
-      disconnectRef.current = onDisconnect(ref);
-      disconnectRef.current.update({ status: 'closed' });
+
 
       setError('');
     } catch (e) {
@@ -175,7 +174,6 @@ export default function FingerRaceGame() {
       });
 
       disconnectRef.current = onDisconnect(ref);
-      disconnectRef.current.update({ [`players.${userId}`]: deleteField() });
 
       setError('');
     } catch (e) {
@@ -207,7 +205,6 @@ export default function FingerRaceGame() {
         await updateDoc(ref, { [`players.${userId}`]: deleteField() });
       }
     } finally {
-      if (disconnectRef.current) disconnectRef.current.cancel();
       cleanupAfterLeave();
     }
   };
@@ -314,16 +311,19 @@ export default function FingerRaceGame() {
         Carrera de Dedos
       </h1>
 
-      <input
-        ref={nameInputRef}
-        value={playerName}
-        onChange={e => setPlayerName(e.target.value)}
-        placeholder="Tu nombre"
-        className="w-full p-5 text-xl border-4 rounded-2xl focus:ring-4 focus:ring-yellow-400 outline-none"
-        maxLength={15}
-        autoFocus
-      />
-
+<input
+  ref={nameInputRef}
+  value={playerName}
+  onChange={e => setPlayerName(e.target.value)}
+  onKeyDown={e => e.key === 'Enter' && roomCode.length === 4 && joinRoom()}
+  placeholder="Tu nombre"
+  name="player-name"
+  id="player-name"
+  autoComplete="nickname"
+  className="w-full p-5 text-xl border-4 rounded-2xl focus:ring-4 focus:ring-yellow-400 outline-none"
+  maxLength={15}
+ // autoFocus
+/>
       <div className="my-8">
         <p className="text-lg font-bold mb-4 text-center">Elige tu avatar</p>
         <AvatarPicker />
@@ -337,14 +337,19 @@ export default function FingerRaceGame() {
         </button>
 
         <div className="flex gap-3">
-          <input
-            ref={codeInputRef}
-            value={roomCode}
-            onChange={e => setRoomCode(e.target.value.replace(/[^A-Z0-9]/gi, '').slice(0,4))}
-            placeholder="CÓDIGO"
-            maxLength={4}
-            className="flex-1 p-6 border-4 rounded-3xl text-center font-mono text-4xl tracking-widest uppercase focus:ring-4 focus:ring-blue-500 outline-none"
-          />
+    <input
+  ref={codeInputRef}
+  value={roomCode}
+  onChange={e => setRoomCode(e.target.value.replace(/[^A-Z0-9]/gi, '').slice(0,4))}
+  onKeyDown={e => e.key === 'Enter' && playerName.trim() && joinRoom()}
+  placeholder="CÓDIGO"
+  name="room-code"
+  id="room-code"
+  autoComplete="off"
+  maxLength={4}
+  className="flex-1 p-6 border-4 rounded-3xl text-center font-mono text-4xl tracking-widest uppercase focus:ring-4 focus:ring-blue-500 outline-none"
+/>
+          
           <button onClick={joinRoom} className="bg-blue-600 text-white font-black text-2xl px-10 rounded-3xl hover:bg-blue-700 transition">
             Unirse
           </button>
