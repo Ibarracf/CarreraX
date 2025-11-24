@@ -1,20 +1,21 @@
-// App.jsx - VERSIÓN FINAL ÉPICA 2025 (TODO FUNCIONA + ESTILO BRUTAL)
-import React, { useState, useEffect, useRef, useMemo, useCallback } from 'react';
-import { Play, AlertOctagon, Trophy, Users, Smartphone, Check, Crown, LogOut, Zap, Flame, Rocket, Star } from 'lucide-react';
+import React, { useState, useEffect, useRef } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
-import confetti from 'canvas-confetti';
 
-import { auth, db } from './firebase';
-import { 
-  signInAnonymously,
-  onAuthStateChanged
-} from 'firebase/auth';
-import { 
-  doc, setDoc, getDoc, onSnapshot, updateDoc, increment,
-  serverTimestamp, deleteField, runTransaction
-} from 'firebase/firestore';
+const AVATARES = [
+  { name: "🚀", label: "Cohete" },
+  { name: "⚡", label: "Rayo" },
+  { name: "🔥", label: "Fuego" },
+  { name: "💀", label: "Calavera" },
+  { name: "👽", label: "Alien" },
+  { name: "🤖", label: "Robot" },
+  { name: "👻", label: "Fantasma" },
+  { name: "💎", label: "Diamante" },
+  { name: "🐉", label: "Dragón" },
+  { name: "🥷", label: "Ninja" },
+  { name: "🦾", label: "Cyborg" },
+  { name: "🌟", label: "Estrella" }
+];
 
-const AVATARES = ["Rocket", "Flame", "Lightning", "Skull", "Alien", "Robot", "Ghost", "Diamond", "Fire", "Ice", "Dragon", "Ninja"];
 const COLORES = [
   "from-purple-500 to-pink-500",
   "from-blue-500 to-cyan-500",
@@ -29,261 +30,230 @@ const COLORES = [
 const TARGET_SCORE = 30;
 
 export default function FingerRaceGame() {
-  const [userId, setUserId] = useState(null);
-  const [isAuthReady, setIsAuthReady] = useState(false);
   const [view, setView] = useState('menu');
-  const [roomCode, setRoomCode] = useState('');
   const [playerName, setPlayerName] = useState('');
-  const [error, setError] = useState('');
   const [selectedAvatarIndex, setSelectedAvatarIndex] = useState(0);
-
-  const [isHost, setIsHost] = useState(false);
+  const [error, setError] = useState('');
+  const [roomCode, setRoomCode] = useState('');
   const [gameState, setGameState] = useState('waiting');
   const [trafficLight, setTrafficLight] = useState('green');
   const [players, setPlayers] = useState({});
   const [winnerName, setWinnerName] = useState(null);
-  const [targetScore] = useState(TARGET_SCORE);
+  const [userId] = useState(() => 'user_' + Math.random().toString(36).substr(2, 9));
+  const [isHost, setIsHost] = useState(false);
 
-  const trafficTimerRef = useRef(null);
-  const roomListenerRef = useRef(null);
-
-  const getRoomRef = (code) => doc(db, 'rooms', code.toUpperCase());
-
-  // === AUTENTICACIÓN ===
-  useEffect(() => {
-    const unsub = onAuthStateChanged(auth, (u) => {
-      if (u) {
-        setUserId(u.uid);
-        setIsAuthReady(true);
+  const handleTap = () => {
+    if (gameState !== 'racing') return;
+    
+    setPlayers(prev => {
+      const newPlayers = { ...prev };
+      if (!newPlayers[userId]) return prev;
+      
+      const player = newPlayers[userId];
+      
+      if (player.stunned) {
+        player.stunned = false;
+        return newPlayers;
       }
-    });
-    if (!auth.currentUser) signInAnonymously(auth);
-    return () => unsub();
-  }, []);
-
-  // === ESCUCHA DE SALA (AHORA SÍ ACTUALIZA AL INSTANTE) ===
-  useEffect(() => {
-    if (!roomCode || !isAuthReady) return;
-
-    const roomRef = getRoomRef(roomCode);
-    const unsub = onSnapshot(roomRef, (snap) => {
-      if (!snap.exists()) {
-        setError('Sala no existe');
-        setView('menu');
-        return;
+      
+      if (trafficLight === 'red') {
+        player.score = Math.max(0, (player.score || 0) - 3);
+        player.stunned = true;
+        return newPlayers;
       }
-
-      const data = snap.data();
-      setPlayers(data.players || {});
-      setGameState(data.status || 'waiting');
-      setTrafficLight(data.trafficLight || 'green');
-      setWinnerName(data.winnerName || null);
-      setIsHost(data.hostId === userId);
-
-      if (data.status === 'racing') setView('game');
-      else if (data.status === 'finished') setView('winner');
-      else setView('lobby');
-    }, (err) => {
-      console.error(err);
-      setError('Error de conexión');
-    });
-
-    roomListenerRef.current = unsub;
-    return () => unsub && unsub();
-  }, [roomCode, isAuthReady, userId]);
-
-  // === CREAR / UNIRSE / SALIR (TODO CORREGIDO) ===
-  const createRoom = async () => {
-    if (!playerName.trim()) return setError('Ingresa tu nombre');
-    const code = Math.random().toString(36).substring(2, 6).toUpperCase();
-    const ref = getRoomRef(code);
-
-    await setDoc(ref, {
-      hostId: userId,
-      status: 'waiting',
-      trafficLight: 'green',
-      createdAt: serverTimestamp(),
-      targetScore: TARGET_SCORE,
-      players: {
-        [userId]: {
-          name: playerName.trim(),
-          score: 0,
-          avatar: AVATARES[selectedAvatarIndex],
-          color: COLORES[selectedAvatarIndex],
-          stunned: false,
-          isHost: true
-        }
+      
+      const newScore = (player.score || 0) + 1;
+      if (newScore >= TARGET_SCORE && !winnerName) {
+        setWinnerName(player.name);
+        setGameState('finished');
+        setView('winner');
       }
+      
+      player.score = newScore;
+      return newPlayers;
     });
-    setRoomCode(code);
-    setError('');
   };
 
-  const joinRoom = async () => {
+  const createRoom = () => {
     if (!playerName.trim()) return setError('Ingresa tu nombre');
-    if (roomCode.length !== 4) return setError('Código de 4 letras');
-    const ref = getRoomRef(roomCode);
-    const snap = await getDoc(ref);
-    if (!snap.exists() || snap.data().status !== 'waiting') return setError('Sala no disponible');
-
-    await updateDoc(ref, {
-      [`players.${userId}`]: {
+    const code = Math.random().toString(36).substring(2, 6).toUpperCase();
+    setRoomCode(code);
+    setPlayers({
+      [userId]: {
         name: playerName.trim(),
         score: 0,
-        avatar: AVATARES[selectedAvatarIndex],
+        avatar: AVATARES[selectedAvatarIndex].name,
+        color: COLORES[selectedAvatarIndex],
+        stunned: false,
+        isHost: true
+      }
+    });
+    setIsHost(true);
+    setError('');
+    setView('lobby');
+  };
+
+  const joinRoom = () => {
+    if (!playerName.trim()) return setError('Ingresa tu nombre');
+    if (roomCode.length !== 4) return setError('Código de 4 caracteres');
+    
+    setPlayers(prev => ({
+      ...prev,
+      [userId]: {
+        name: playerName.trim(),
+        score: 0,
+        avatar: AVATARES[selectedAvatarIndex].name,
         color: COLORES[selectedAvatarIndex],
         stunned: false,
         isHost: false
       }
-    });
+    }));
     setError('');
+    setView('lobby');
   };
 
-  const leaveRoom = async () => {
-    if (!roomCode) return;
-    const ref = getRoomRef(roomCode);
-    const snap = await getDoc(ref);
-    if (!snap.exists()) return setView('menu');
+  const startGame = () => {
+    setGameState('racing');
+    setTrafficLight('green');
+    setView('game');
+  };
 
-    const data = snap.data();
-    const playerCount = Object.keys(data.players || {}).length;
-
-    if (data.hostId === userId && playerCount > 1) {
-      const newHost = Object.keys(data.players).find(id => id !== userId);
-      await updateDoc(ref, {
-        hostId: newHost,
-        [`players.${newHost}.isHost`]: true,
-        [`players.${userId}`]: deleteField()
-      });
-    } else if (playerCount <= 1) {
-      await updateDoc(ref, { status: 'closed' });
-    } else {
-      await updateDoc(ref, { [`players.${userId}`]: deleteField() });
-    }
+  const leaveRoom = () => {
     setView('menu');
     setRoomCode('');
     setPlayers({});
+    setPlayerName('');
+    setGameState('waiting');
+    setWinnerName(null);
+    setError('');
   };
 
-  const startGame = () => updateDoc(getRoomRef(roomCode), { status: 'racing' });
-  const resetGame = () => updateDoc(getRoomRef(roomCode), { status: 'waiting', winnerName: deleteField() });
-  // === TAP ÉPICO ===
-  const handleTap = useCallback(async () => {
-  if (gameState !== 'racing' || !roomCode || !userId) return;
-
-  const roomRef = getRoomRef(roomCode);
-
-  try {
-    await runTransaction(db, async (transaction) => {
-      const roomSnap = await transaction.get(roomRef);
-      if (!roomSnap.exists()) throw "Sala no existe";
-      
-      const data = roomSnap.data();
-      if (data.status !== 'racing') return;
-
-      const player = data.players?.[userId];
-      if (!player) return;
-
-      // Si está aturdido → solo se des-aturde
-      if (player.stunned) {
-        transaction.update(roomRef, {
-          [`players.${userId}.stunned`]: false
-        });
-        return;
-      }
-
-      // Semáforo en rojo → penalización
-      if (data.trafficLight === 'red') {
-        transaction.update(roomRef, {
-          [`players.${userId}.score`]: Math.max(0, (player.score || 0) - 3),
-          [`players.${userId}.stunned`]: true
-        });
-        return;
-      }
-
-      // Avanzar normal
-      const newScore = (player.score || 0) + 1;
-
-      if (newScore >= targetScore && !data.winnerName) {
-        // GANADOR
-        transaction.update(roomRef, {
-          status: 'finished',
-          winnerName: player.name,
-          [`players.${userId}.score`]: targetScore
-        });
-        confetti({
-          particleCount: 400,
-          spread: 100,
-          origin: { y: 0.6 }
-        });
-      } else {
-        // Solo avanzar
-        transaction.update(roomRef, {
-          [`players.${userId}.score`]: increment(1)
-        });
-      }
+  const resetGame = () => {
+    setGameState('waiting');
+    setWinnerName(null);
+    setTrafficLight('green');
+    setPlayers(prev => {
+      const newPlayers = { ...prev };
+      Object.keys(newPlayers).forEach(id => {
+        newPlayers[id].score = 0;
+        newPlayers[id].stunned = false;
+      });
+      return newPlayers;
     });
-  } catch (err) {
-    console.log("Tap ignorado (normal en juegos rápidos):", err);
-    // Esto es NORMAL cuando muchos tocan a la vez
-  }
-}, [roomCode, gameState, userId]);
-  
-  // === VISTAS ===
+    setView('lobby');
+  };
+
+  // Cambios de semáforo durante la carrera
+  useEffect(() => {
+    if (gameState !== 'racing') return;
+    
+    const interval = setInterval(() => {
+      setTrafficLight(prev => prev === 'green' ? 'red' : 'green');
+    }, 2000 + Math.random() * 2000);
+    
+    return () => clearInterval(interval);
+  }, [gameState]);
+
   const MenuView = () => (
-    <motion.div className="min-h-screen bg-gradient-to-br from-purple-600 via-pink-600 to-orange-500 flex items-center justify-center p-6">
-      <div className="max-w-md w-full bg-white/95 backdrop-blur-xl rounded-3xl shadow-2xl p-10 border border-white/20">
-        <h1 className="text-6xl font-black text-center bg-gradient-to-r from-purple-600 to-pink-600 bg-clip-text text-transparent mb-8">
-          CARRERA X
-        </h1>
+    <motion.div 
+      initial={{ opacity: 0 }}
+      animate={{ opacity: 1 }}
+      exit={{ opacity: 0 }}
+      className="min-h-screen bg-gradient-to-br from-slate-900 via-purple-900 to-slate-900 flex items-center justify-center p-4"
+    >
+      <div className="max-w-md w-full">
+        <motion.div
+          initial={{ y: -50, opacity: 0 }}
+          animate={{ y: 0, opacity: 1 }}
+          transition={{ delay: 0.2 }}
+          className="text-center mb-8"
+        >
+          <div className="text-7xl mb-4">🏁</div>
+          <h1 className="text-6xl font-black bg-gradient-to-r from-purple-400 via-pink-400 to-red-400 bg-clip-text text-transparent mb-2">
+            CARRERA X
+          </h1>
+          <p className="text-xl text-purple-300">Juego de Reflejos Épico</p>
+        </motion.div>
 
-        <input
-          value={playerName}
-          onChange={e => setPlayerName(e.target.value)}
-          placeholder="Tu nombre épico"
-          name="player-name"
-          id="player-name"
-          autoComplete="nickname"
-          className="w-full p-5 text-2xl rounded-2xl border-4 border-purple-300 focus:border-purple-600 outline-none transition"
-          maxLength={12}
-          autoFocus
-        />
-
-        <div className="my-8">
-          <p className="text-center font-bold text-xl mb-6 text-purple-700">Elige tu guerrero</p>
-          <div className="grid grid-cols-4 gap-4">
-            {AVATARES.map((a, i) => (
-              <button
-                key={i}
-                onClick={() => setSelectedAvatarIndex(i)}
-                className={`p-4 rounded-2xl transition-all ${selectedAvatarIndex === i ? 'bg-gradient-to-r ' + COLORES[i] + ' scale-125 shadow-2xl ring-4 ring-white' : 'bg-gray-200'}`}
-              >
-                <span className="text-4xl">{a}</span>
-              </button>
-            ))}
+        <motion.div
+          initial={{ scale: 0.9, opacity: 0 }}
+          animate={{ scale: 1, opacity: 1 }}
+          transition={{ delay: 0.3 }}
+          className="bg-gradient-to-br from-purple-900/50 to-slate-800/50 backdrop-blur-2xl rounded-3xl shadow-2xl p-8 border border-purple-500/20 space-y-6"
+        >
+          <div>
+            <label className="text-purple-300 text-sm font-bold mb-2 block">Tu Nombre</label>
+            <input
+              value={playerName}
+              onChange={e => setPlayerName(e.target.value)}
+              placeholder="Ej: Ninja Pro"
+              className="w-full px-6 py-4 bg-slate-800/50 border-2 border-purple-500/30 rounded-2xl text-white placeholder-slate-400 focus:border-purple-500 focus:outline-none transition text-lg font-semibold"
+              maxLength={16}
+              autoFocus
+            />
           </div>
-        </div>
 
-        {error && <p className="text-red-500 font-bold text-center bg-red-100 py-3 rounded-xl">{error}</p>}
+          <div>
+            <p className="text-purple-300 text-sm font-bold mb-4">Elige tu Avatar</p>
+            <div className="grid grid-cols-4 gap-3">
+              {AVATARES.map((a, i) => (
+                <motion.button
+                  key={i}
+                  whileHover={{ scale: 1.1 }}
+                  whileTap={{ scale: 0.95 }}
+                  onClick={() => setSelectedAvatarIndex(i)}
+                  className={`p-4 rounded-xl transition-all ${
+                    selectedAvatarIndex === i 
+                      ? `bg-gradient-to-r ${COLORES[i]} ring-4 ring-white shadow-lg` 
+                      : 'bg-slate-700/50 hover:bg-slate-600/50'
+                  }`}
+                  title={a.label}
+                >
+                  <span className="text-4xl block">{a.name}</span>
+                </motion.button>
+              ))}
+            </div>
+          </div>
 
-        <button onClick={createRoom} className="w-full bg-gradient-to-r from-purple-600 to-pink-600 text-white font-black text-2xl py-6 rounded-2xl shadow-2xl hover:scale-105 transition my-4">
-          <Rocket className="inline mr-3" /> CREAR SALA
-        </button>
+          {error && (
+            <motion.div
+              initial={{ y: -10 }}
+              animate={{ y: 0 }}
+              className="bg-red-500/20 border border-red-500 text-red-200 px-4 py-3 rounded-xl text-sm font-semibold text-center"
+            >
+              ⚠️ {error}
+            </motion.div>
+          )}
 
-        <div className="flex gap-3">
-          <input
-            value={roomCode}
-            onChange={e => setRoomCode(e.target.value.replace(/[^A-Z0-9]/gi, '').slice(0,4))}
-            placeholder="CÓDIGO"
-            name="room-code"
-            id="room-code"
-            className="flex-1 p-5 text-center text-4xl font-bold tracking-widest uppercase border-4 border-purple-400 rounded-2xl focus:border-purple-700"
-            maxLength={4}
-          />
-          <button onClick={joinRoom} className="bg-gradient-to-r from-cyan-500 to-blue-500 text-white font-black text-xl px-8 rounded-2xl shadow-xl hover:scale-110 transition">
-            UNIRSE
-          </button>
-        </div>
+          <div className="space-y-4">
+            <motion.button
+              whileHover={{ scale: 1.02 }}
+              whileTap={{ scale: 0.98 }}
+              onClick={createRoom}
+              className="w-full bg-gradient-to-r from-green-500 to-emerald-600 hover:from-green-600 hover:to-emerald-700 text-white font-black text-xl py-5 rounded-2xl shadow-xl transition"
+            >
+              🚀 CREAR SALA
+            </motion.button>
+
+            <div className="flex gap-3">
+              <input
+                value={roomCode}
+                onChange={e => setRoomCode(e.target.value.replace(/[^A-Z0-9]/gi, '').slice(0, 4))}
+                placeholder="CÓDIGO"
+                className="flex-1 px-4 py-4 text-center text-3xl font-bold tracking-widest uppercase bg-slate-800/50 border-2 border-purple-500/30 rounded-xl focus:border-purple-500 focus:outline-none text-white"
+                maxLength={4}
+              />
+              <motion.button
+                whileHover={{ scale: 1.05 }}
+                whileTap={{ scale: 0.95 }}
+                onClick={joinRoom}
+                className="px-6 py-4 bg-gradient-to-r from-blue-500 to-purple-600 hover:from-blue-600 hover:to-purple-700 text-white font-black rounded-xl shadow-xl transition"
+              >
+                UNIRSE
+              </motion.button>
+            </div>
+          </div>
+        </motion.div>
       </div>
     </motion.div>
   );
@@ -292,40 +262,65 @@ export default function FingerRaceGame() {
     const playerList = Object.entries(players).map(([id, p]) => ({ id, ...p }));
 
     return (
-      <motion.div className="min-h-screen bg-gradient-to-br from-indigo-600 via-purple-600 to-pink-600 p-8">
-        <div className="max-w-6xl mx-auto">
-          <div className="text-center mb-10">
-            <h2 className="text-6xl font-black text-white drop-shadow-2xl">SALA: <span className="text-yellow-400">{roomCode}</span></h2>
-            <p className="text-3xl text-white mt-4"><Users className="inline" /> {playerList.length} guerreros listos</p>
-          </div>
+      <motion.div
+        initial={{ opacity: 0 }}
+        animate={{ opacity: 1 }}
+        exit={{ opacity: 0 }}
+        className="min-h-screen bg-gradient-to-br from-indigo-900 via-purple-900 to-slate-900 p-8"
+      >
+        <div className="max-w-7xl mx-auto">
+          <motion.div
+            initial={{ y: -20, opacity: 0 }}
+            animate={{ y: 0, opacity: 1 }}
+            className="text-center mb-12"
+          >
+            <div className="inline-block bg-gradient-to-r from-purple-500 to-pink-500 px-8 py-4 rounded-full mb-6">
+              <p className="text-white font-black text-2xl">Código: <span className="text-yellow-300 text-3xl">{roomCode}</span></p>
+            </div>
+            <h2 className="text-5xl font-black text-white mb-2">¡Sala Lista!</h2>
+            <p className="text-xl text-purple-300">👥 {playerList.length} {playerList.length === 1 ? 'guerrero' : 'guerreros'} conectados</p>
+          </motion.div>
 
-          <div className="grid grid-cols-2 md:grid-cols-4 gap-8">
-            {playerList.map(p => (
+          <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-6 mb-12">
+            {playerList.map((p, idx) => (
               <motion.div
                 key={p.id}
                 initial={{ scale: 0, rotate: -180 }}
                 animate={{ scale: 1, rotate: 0 }}
-                className="bg-white/20 backdrop-blur-xl rounded-3xl p-8 text-center shadow-2xl border border-white/30"
+                transition={{ delay: idx * 0.1 }}
+                className="bg-gradient-to-br from-purple-800/50 to-slate-800/50 backdrop-blur-xl rounded-3xl p-6 border border-purple-500/30 shadow-xl hover:shadow-2xl hover:border-purple-500/50 transition"
               >
-                <div className={`w-32 h-32 mx-auto rounded-full bg-gradient-to-r ${p.color} flex items-center justify-center text-6xl shadow-2xl`}>
+                <div className={`w-24 h-24 mx-auto rounded-2xl bg-gradient-to-r ${p.color} flex items-center justify-center text-5xl shadow-lg mb-4`}>
                   {p.avatar}
                 </div>
-                <p className="text-3xl font-black text-white mt-4">{p.name}</p>
-                {p.id === userId && <p className="text-yellow-400 text-xl">(TÚ)</p>}
-                {p.isHost && <Crown className="mx-auto mt-3 text-yellow-400" size={40} />}
+                <p className="text-xl font-black text-white text-center mb-2">{p.name}</p>
+                <div className="flex justify-center gap-2">
+                  {p.id === userId && <span className="bg-yellow-500 text-black px-3 py-1 rounded-full text-xs font-bold">TÚ</span>}
+                  {p.isHost && <span className="bg-purple-500 text-white px-3 py-1 rounded-full text-xs font-bold">👑 HOST</span>}
+                </div>
               </motion.div>
             ))}
           </div>
 
-          <div className="text-center mt-12 space-x-8">
+          <div className="flex flex-col sm:flex-row justify-center gap-6">
             {isHost && (
-              <button onClick={startGame} className="bg-gradient-to-r from-green-500 to-emerald-600 text-white px-16 py-8 rounded-full text-4xl font-black shadow-2xl hover:scale-110 transition">
-                <Zap className="inline mr-4" /> ¡INICIAR!
-              </button>
+              <motion.button
+                whileHover={{ scale: 1.05 }}
+                whileTap={{ scale: 0.95 }}
+                onClick={startGame}
+                className="bg-gradient-to-r from-green-500 to-emerald-600 hover:from-green-600 hover:to-emerald-700 text-white px-12 py-6 rounded-full text-2xl font-black shadow-xl transition"
+              >
+                ⚡ ¡COMENZAR!
+              </motion.button>
             )}
-            <button onClick={leaveRoom} className="bg-red-600 text-white px-12 py-6 rounded-full text-2xl font-bold hover:bg-red-700 transition">
-              <LogOut className="inline mr-3" /> Salir
-            </button>
+            <motion.button
+              whileHover={{ scale: 1.05 }}
+              whileTap={{ scale: 0.95 }}
+              onClick={leaveRoom}
+              className="bg-red-600 hover:bg-red-700 text-white px-12 py-6 rounded-full text-xl font-bold shadow-xl transition"
+            >
+              ❌ Salir
+            </motion.button>
           </div>
         </div>
       </motion.div>
@@ -337,53 +332,105 @@ export default function FingerRaceGame() {
       .map(([id, p]) => ({ id, ...p }))
       .sort((a, b) => (b.score || 0) - (a.score || 0));
 
-    return (
-      <motion.div className="min-h-screen bg-gradient-to-br from-black via-purple-900 to-pink-900 p-6">
-        <div className="max-w-6xl mx-auto">
-          <div className="text-center mb-10">
-            <h2 className="text-8xl font-black text-white drop-shadow-2xl">¡A CORRER!</h2>
-            <div className={`text-9xl mt-6 ${trafficLight === 'green' ? 'text-green-400' : 'text-red-600'} animate-pulse`}>
-              {trafficLight === 'green' ? <Play /> : <AlertOctagon />}
-            </div>
-          </div>
+    const currentPlayer = players[userId];
 
-          <div className="space-y-8">
-            {sorted.map((p, i) => {
-              const percent = ((p.score || 0) / targetScore) * 100;
+    return (
+      <motion.div
+        initial={{ opacity: 0 }}
+        animate={{ opacity: 1 }}
+        exit={{ opacity: 0 }}
+        className="min-h-screen bg-gradient-to-br from-black via-purple-950 to-slate-900 p-6"
+      >
+        <div className="max-w-7xl mx-auto">
+          <motion.div
+            initial={{ scale: 0 }}
+            animate={{ scale: 1 }}
+            className="text-center mb-10"
+          >
+            <h2 className="text-5xl font-black text-white mb-6">🏁 ¡A CORRER!</h2>
+            <motion.div
+              animate={{ scale: [1, 1.1, 1] }}
+              transition={{ repeat: Infinity, duration: 0.8 }}
+              className={`text-9xl ${trafficLight === 'green' ? 'text-green-400' : 'text-red-500'}`}
+            >
+              {trafficLight === 'green' ? '🟢' : '🔴'}
+            </motion.div>
+            <p className="text-2xl font-bold text-white mt-4">
+              {trafficLight === 'green' ? '¡CORRE!' : '¡ALTO!'}
+            </p>
+          </motion.div>
+
+          <div className="space-y-4 mb-12">
+            {sorted.map((p, idx) => {
+              const percent = ((p.score || 0) / TARGET_SCORE) * 100;
+              const isCurrentPlayer = p.id === userId;
+
               return (
-                <div key={p.id} className="bg-white/10 backdrop-blur-md rounded-3xl p-6 shadow-2xl border border-white/20">
+                <motion.div
+                  key={p.id}
+                  initial={{ x: -50, opacity: 0 }}
+                  animate={{ x: 0, opacity: 1 }}
+                  transition={{ delay: idx * 0.05 }}
+                  className={`bg-gradient-to-r ${p.color}/20 backdrop-blur-lg rounded-2xl p-6 border-2 ${
+                    isCurrentPlayer ? 'border-yellow-400 shadow-lg shadow-yellow-400/50' : 'border-purple-500/30'
+                  }`}
+                >
                   <div className="flex items-center gap-6">
-                    <div className="text-6xl">{p.avatar}</div>
-                    <div className="flex-1">
-                      <div className="flex justify-between text-white text-2xl font-bold mb-2">
-                        <span>{p.name}</span>
-                        <span>{p.score || 0}/{targetScore}</span>
+                    <div className="text-5xl flex-shrink-0">{p.avatar}</div>
+                    
+                    <div className="flex-1 min-w-0">
+                      <div className="flex justify-between items-center mb-3">
+                        <div>
+                          <p className="text-xl font-black text-white">{p.name}</p>
+                          {isCurrentPlayer && <p className="text-sm text-yellow-300">📍 TÚ</p>}
+                        </div>
+                        <p className="text-2xl font-black text-white bg-black/40 px-4 py-2 rounded-lg whitespace-nowrap">
+                          {p.score || 0}/{TARGET_SCORE}
+                        </p>
                       </div>
-                      <div className="h-16 bg-gray-800 rounded-full overflow-hidden shadow-inner">
+                      
+                      <div className="h-10 bg-black/50 rounded-full overflow-hidden border border-purple-500/30">
                         <motion.div
-                          className={`h-full bg-gradient-to-r ${p.color} flex items-center justify-end pr-6 text-3xl font-black`}
-                          initial={{ width: 0 }}
+                          className={`h-full bg-gradient-to-r ${p.color} flex items-center justify-end pr-3 text-2xl font-black text-white`}
                           animate={{ width: `${percent}%` }}
-                          transition={{ type: "spring", stiffness: 80 }}
+                          transition={{ type: 'spring', stiffness: 100 }}
                         >
-                          {percent > 20 && p.avatar}
+                          {percent > 10 && p.avatar}
                         </motion.div>
                       </div>
                     </div>
+
+                    {p.stunned && (
+                      <motion.div
+                        animate={{ rotate: [0, -5, 5, -5, 0] }}
+                        transition={{ repeat: Infinity, duration: 0.5 }}
+                        className="text-4xl flex-shrink-0"
+                      >
+                        😵
+                      </motion.div>
+                    )}
                   </div>
-                </div>
+                </motion.div>
               );
             })}
           </div>
 
-          <div className="text-center mt-16">
-            <button
+          <div className="flex justify-center">
+            <motion.button
+              whileTap={{ scale: 0.9 }}
+              whileHover={{ scale: 1.05 }}
               onClick={handleTap}
-              className={`px-32 py-24 rounded-full text-8xl font-black text-white shadow-2xl transition-all
-                ${players[userId]?.stunned ? 'bg-red-600 animate-pulse' : trafficLight === 'green' ? 'bg-gradient-to-r from-green-500 to-emerald-600 hover:from-green-600 hover:to-emerald-700 active:scale-95' : 'bg-gray-700'}`}
+              disabled={!currentPlayer}
+              className={`w-48 h-48 rounded-full font-black text-6xl shadow-2xl transition-all ${
+                currentPlayer?.stunned
+                  ? 'bg-red-600 animate-pulse text-white'
+                  : trafficLight === 'green'
+                  ? 'bg-gradient-to-r from-green-500 to-emerald-600 hover:from-green-600 hover:to-emerald-700 text-white active:scale-95'
+                  : 'bg-slate-700 text-slate-400'
+              }`}
             >
-              {players[userId]?.stunned ? 'STUN' : 'TOCA'}
-            </button>
+              {currentPlayer?.stunned ? '😵' : '👆'}
+            </motion.button>
           </div>
         </div>
       </motion.div>
@@ -391,34 +438,76 @@ export default function FingerRaceGame() {
   };
 
   const WinnerView = () => (
-    <motion.div className="min-h-screen bg-gradient-to-br from-yellow-400 via-orange-500 to-pink-600 flex items-center justify-center">
-      <div className="text-center">
-        <Trophy size={200} className="mx-auto text-white mb-8 drop-shadow-2xl" />
-        <h2 className="text-9xl font-black text-white mb-8 drop-shadow-2xl">¡GANADOR!</h2>
-        <p className="text-8xl font-black text-black bg-white/90 rounded-3xl px-20 py-10 inline-block shadow-2xl">
-          {winnerName}
-        </p>
-        <div className="mt-16">
+    <motion.div
+      initial={{ opacity: 0, scale: 0.8 }}
+      animate={{ opacity: 1, scale: 1 }}
+      exit={{ opacity: 0 }}
+      className="min-h-screen bg-gradient-to-br from-yellow-400 via-orange-500 to-pink-600 flex items-center justify-center p-4"
+    >
+      <motion.div className="text-center">
+        <motion.div
+          animate={{ rotate: [0, -10, 10, -10, 0], y: [0, -20, 0] }}
+          transition={{ repeat: Infinity, duration: 2 }}
+          className="text-9xl mb-8"
+        >
+          🏆
+        </motion.div>
+        
+        <motion.h2
+          initial={{ y: 20, opacity: 0 }}
+          animate={{ y: 0, opacity: 1 }}
+          transition={{ delay: 0.2 }}
+          className="text-8xl font-black text-white drop-shadow-2xl mb-8"
+        >
+          ¡GANADOR!
+        </motion.h2>
+        
+        <motion.div
+          initial={{ scale: 0, rotate: -180 }}
+          animate={{ scale: 1, rotate: 0 }}
+          transition={{ delay: 0.4, type: 'spring' }}
+          className="bg-white/95 rounded-3xl px-12 py-8 mb-12 inline-block shadow-2xl"
+        >
+          <p className="text-7xl font-black text-transparent bg-gradient-to-r from-yellow-500 to-orange-600 bg-clip-text">
+            {winnerName}
+          </p>
+        </motion.div>
+
+        <motion.div
+          initial={{ y: 20, opacity: 0 }}
+          animate={{ y: 0, opacity: 1 }}
+          transition={{ delay: 0.6 }}
+        >
           {isHost ? (
-            <button onClick={resetGame} className="bg-black text-yellow-400 px-20 py-10 rounded-full text-5xl font-black shadow-2xl hover:scale-110 transition">
-              NUEVA PARTIDA
-            </button>
+            <motion.button
+              whileHover={{ scale: 1.05 }}
+              whileTap={{ scale: 0.95 }}
+              onClick={resetGame}
+              className="bg-black text-yellow-400 px-12 py-6 rounded-full text-4xl font-black shadow-2xl hover:bg-slate-900 transition"
+            >
+              🔄 NUEVA PARTIDA
+            </motion.button>
           ) : (
-            <button onClick={leaveRoom} className="bg-white text-black px-20 py-10 rounded-full text-5xl font-black shadow-2xl hover:scale-110 transition">
-              SALIR
-            </button>
+            <motion.button
+              whileHover={{ scale: 1.05 }}
+              whileTap={{ scale: 0.95 }}
+              onClick={leaveRoom}
+              className="bg-white text-black px-12 py-6 rounded-full text-3xl font-black shadow-2xl hover:bg-gray-200 transition"
+            >
+              ❌ SALIR
+            </motion.button>
           )}
-        </div>
-      </div>
+        </motion.div>
+      </motion.div>
     </motion.div>
   );
 
   return (
     <AnimatePresence mode="wait">
-      {view === 'menu' && <MenuView />}
-      {view === 'lobby' && <LobbyView />}
-      {view === 'game' && <GameView />}
-      {view === 'winner' && <WinnerView />}
+      {view === 'menu' && <MenuView key="menu" />}
+      {view === 'lobby' && <LobbyView key="lobby" />}
+      {view === 'game' && <GameView key="game" />}
+      {view === 'winner' && <WinnerView key="winner" />}
     </AnimatePresence>
   );
 }
