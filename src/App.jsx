@@ -84,18 +84,25 @@ export default function FingerRaceGame() {
       }
 
       const data = snap.data();
+      console.log('Sala actualizada:', data); // DEBUG
+      
       setPlayers(data.players || {});
       setGameState(data.status || 'waiting');
       setTrafficLight(data.trafficLight || 'green');
       setWinnerName(data.winnerName || null);
       setIsHost(data.hostId === userId);
 
-      if (data.status === 'racing') setView('game');
-      else if (data.status === 'finished') setView('winner');
-      else setView('lobby');
+      // Cambiar vista según estado
+      if (data.status === 'racing') {
+        setView('game');
+      } else if (data.status === 'finished') {
+        setView('winner');
+      } else if (data.status === 'waiting' && roomCode) {
+        setView('lobby');
+      }
     }, (err) => {
-      console.error(err);
-      setError('Error de conexión');
+      console.error('Error de listener:', err);
+      setError('Error de conexión: ' + err.message);
     });
 
     roomListenerRef.current = unsub;
@@ -143,18 +150,23 @@ export default function FingerRaceGame() {
     const colorIdx = selectedColorIndex >= 0 ? selectedColorIndex : 0;
     
     try {
-      const snap = await getDoc(ref);
-      if (!snap.exists() || snap.data().status !== 'waiting') return setError('Sala no disponible');
-
-      await updateDoc(ref, {
-        [`players.${userId}`]: {
-          name: playerName.trim(),
-          score: 0,
-          avatar: AVATARES[avatarIdx].name || '🚀',
-          color: COLORES[colorIdx] || 'from-purple-500 to-pink-500',
-          stunned: false,
-          isHost: false
+      await runTransaction(db, async (transaction) => {
+        const snap = await transaction.get(ref);
+        if (!snap.exists() || snap.data().status !== 'waiting') {
+          throw new Error('Sala no disponible');
         }
+
+        const currentPlayers = snap.data().players || {};
+        transaction.update(ref, {
+          [`players.${userId}`]: {
+            name: playerName.trim(),
+            score: 0,
+            avatar: AVATARES[avatarIdx].name || '🚀',
+            color: COLORES[colorIdx] || 'from-purple-500 to-pink-500',
+            stunned: false,
+            isHost: false
+          }
+        });
       });
       setError('');
     } catch (err) {
@@ -163,27 +175,33 @@ export default function FingerRaceGame() {
   };
 
   const leaveRoom = async () => {
-    if (!roomCode) return;
+    if (!roomCode || !userId) return;
     const ref = getRoomRef(roomCode);
     try {
-      const snap = await getDoc(ref);
-      if (!snap.exists()) return setView('menu');
+      await runTransaction(db, async (transaction) => {
+        const snap = await transaction.get(ref);
+        if (!snap.exists()) return;
 
-      const data = snap.data();
-      const playerCount = Object.keys(data.players || {}).length;
+        const data = snap.data();
+        const playerCount = Object.keys(data.players || {}).length;
+        const newPlayers = { ...data.players };
 
-      if (data.hostId === userId && playerCount > 1) {
-        const newHost = Object.keys(data.players).find(id => id !== userId);
-        await updateDoc(ref, {
-          hostId: newHost,
-          [`players.${newHost}.isHost`]: true,
-          [`players.${userId}`]: deleteField()
-        });
-      } else if (playerCount <= 1) {
-        await updateDoc(ref, { status: 'closed' });
-      } else {
-        await updateDoc(ref, { [`players.${userId}`]: deleteField() });
-      }
+        if (data.hostId === userId && playerCount > 1) {
+          const newHostId = Object.keys(newPlayers).find(id => id !== userId);
+          delete newPlayers[userId];
+          transaction.update(ref, {
+            hostId: newHostId,
+            [`players.${newHostId}.isHost`]: true,
+            players: newPlayers
+          });
+        } else if (playerCount <= 1) {
+          transaction.delete(ref);
+        } else {
+          delete newPlayers[userId];
+          transaction.update(ref, { players: newPlayers });
+        }
+      });
+      
       setView('menu');
       setRoomCode('');
       setPlayers({});
@@ -195,35 +213,45 @@ export default function FingerRaceGame() {
 
   const startGame = async () => {
     try {
-      await updateDoc(getRoomRef(roomCode), { 
-        status: 'racing',
-        trafficLight: 'green'
+      await runTransaction(db, async (transaction) => {
+        const ref = getRoomRef(roomCode);
+        const snap = await transaction.get(ref);
+        if (!snap.exists()) throw new Error('Sala no existe');
+
+        transaction.update(ref, { 
+          status: 'racing',
+          trafficLight: 'green'
+        });
       });
       startTrafficLight();
     } catch (err) {
       console.error(err);
+      setError('Error al iniciar juego');
     }
   };
 
   const resetGame = async () => {
     try {
-      const ref = getRoomRef(roomCode);
-      const snap = await getDoc(ref);
-      const newPlayers = { ...snap.data().players };
-      
-      Object.keys(newPlayers).forEach(id => {
-        newPlayers[id].score = 0;
-        newPlayers[id].stunned = false;
-      });
+      await runTransaction(db, async (transaction) => {
+        const ref = getRoomRef(roomCode);
+        const snap = await transaction.get(ref);
+        if (!snap.exists()) throw new Error('Sala no existe');
 
-      await updateDoc(ref, { 
-        status: 'waiting', 
-        winnerName: deleteField(),
-        players: newPlayers,
-        trafficLight: 'green'
+        const newPlayers = { ...snap.data().players };
+        Object.keys(newPlayers).forEach(id => {
+          newPlayers[id].score = 0;
+          newPlayers[id].stunned = false;
+        });
+
+        transaction.update(ref, { 
+          status: 'waiting', 
+          players: newPlayers,
+          trafficLight: 'green'
+        });
       });
     } catch (err) {
       console.error(err);
+      setError('Error al reiniciar juego');
     }
   };
 
