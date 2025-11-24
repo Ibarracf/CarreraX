@@ -1,5 +1,13 @@
-import React, { useState, useEffect, useRef } from 'react';
+// App.jsx - VERSIÓN MEJORADA CON FIREBASE
+import React, { useState, useEffect, useRef, useCallback } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
+
+import { auth, db } from './firebase';
+import { signInAnonymously, onAuthStateChanged } from 'firebase/auth';
+import { 
+  doc, setDoc, getDoc, onSnapshot, updateDoc, increment,
+  serverTimestamp, deleteField, runTransaction
+} from 'firebase/firestore';
 
 const AVATARES = [
   { name: "🚀", label: "Cohete" },
@@ -30,130 +38,270 @@ const COLORES = [
 const TARGET_SCORE = 30;
 
 export default function FingerRaceGame() {
+  const [userId, setUserId] = useState(null);
+  const [isAuthReady, setIsAuthReady] = useState(false);
   const [view, setView] = useState('menu');
-  const [playerName, setPlayerName] = useState('');
-  const [selectedAvatarIndex, setSelectedAvatarIndex] = useState(0);
-  const [error, setError] = useState('');
   const [roomCode, setRoomCode] = useState('');
+  const [playerName, setPlayerName] = useState('');
+  const [error, setError] = useState('');
+  const [selectedAvatarIndex, setSelectedAvatarIndex] = useState(0);
+
+  const [isHost, setIsHost] = useState(false);
   const [gameState, setGameState] = useState('waiting');
   const [trafficLight, setTrafficLight] = useState('green');
   const [players, setPlayers] = useState({});
   const [winnerName, setWinnerName] = useState(null);
-  const [userId] = useState(() => 'user_' + Math.random().toString(36).substr(2, 9));
-  const [isHost, setIsHost] = useState(false);
+  const [targetScore] = useState(TARGET_SCORE);
 
-  const handleTap = () => {
-    if (gameState !== 'racing') return;
-    
-    setPlayers(prev => {
-      const newPlayers = { ...prev };
-      if (!newPlayers[userId]) return prev;
-      
-      const player = newPlayers[userId];
-      
-      if (player.stunned) {
-        player.stunned = false;
-        return newPlayers;
+  const trafficTimerRef = useRef(null);
+  const roomListenerRef = useRef(null);
+
+  const getRoomRef = (code) => doc(db, 'rooms', code.toUpperCase());
+
+  // === AUTENTICACIÓN ===
+  useEffect(() => {
+    const unsub = onAuthStateChanged(auth, (u) => {
+      if (u) {
+        setUserId(u.uid);
+        setIsAuthReady(true);
       }
-      
-      if (trafficLight === 'red') {
-        player.score = Math.max(0, (player.score || 0) - 3);
-        player.stunned = true;
-        return newPlayers;
-      }
-      
-      const newScore = (player.score || 0) + 1;
-      if (newScore >= TARGET_SCORE && !winnerName) {
-        setWinnerName(player.name);
-        setGameState('finished');
-        setView('winner');
-      }
-      
-      player.score = newScore;
-      return newPlayers;
     });
-  };
+    if (!auth.currentUser) signInAnonymously(auth);
+    return () => unsub();
+  }, []);
 
-  const createRoom = () => {
+  // === ESCUCHA DE SALA ===
+  useEffect(() => {
+    if (!roomCode || !isAuthReady) return;
+
+    const roomRef = getRoomRef(roomCode);
+    const unsub = onSnapshot(roomRef, (snap) => {
+      if (!snap.exists()) {
+        setError('Sala no existe');
+        setView('menu');
+        return;
+      }
+
+      const data = snap.data();
+      setPlayers(data.players || {});
+      setGameState(data.status || 'waiting');
+      setTrafficLight(data.trafficLight || 'green');
+      setWinnerName(data.winnerName || null);
+      setIsHost(data.hostId === userId);
+
+      if (data.status === 'racing') setView('game');
+      else if (data.status === 'finished') setView('winner');
+      else setView('lobby');
+    }, (err) => {
+      console.error(err);
+      setError('Error de conexión');
+    });
+
+    roomListenerRef.current = unsub;
+    return () => unsub && unsub();
+  }, [roomCode, isAuthReady, userId]);
+
+  // === CREAR / UNIRSE / SALIR ===
+  const createRoom = async () => {
     if (!playerName.trim()) return setError('Ingresa tu nombre');
     const code = Math.random().toString(36).substring(2, 6).toUpperCase();
-    setRoomCode(code);
-    setPlayers({
-      [userId]: {
-        name: playerName.trim(),
-        score: 0,
-        avatar: AVATARES[selectedAvatarIndex].name,
-        color: COLORES[selectedAvatarIndex],
-        stunned: false,
-        isHost: true
-      }
-    });
-    setIsHost(true);
-    setError('');
-    setView('lobby');
+    const ref = getRoomRef(code);
+
+    try {
+      await setDoc(ref, {
+        hostId: userId,
+        status: 'waiting',
+        trafficLight: 'green',
+        createdAt: serverTimestamp(),
+        targetScore: TARGET_SCORE,
+        players: {
+          [userId]: {
+            name: playerName.trim(),
+            score: 0,
+            avatar: AVATARES[selectedAvatarIndex].name,
+            color: COLORES[selectedAvatarIndex],
+            stunned: false,
+            isHost: true
+          }
+        }
+      });
+      setRoomCode(code);
+      setError('');
+    } catch (err) {
+      setError('Error al crear sala: ' + err.message);
+    }
   };
 
-  const joinRoom = () => {
+  const joinRoom = async () => {
     if (!playerName.trim()) return setError('Ingresa tu nombre');
-    if (roomCode.length !== 4) return setError('Código de 4 caracteres');
+    if (roomCode.length !== 4) return setError('Código de 4 letras');
+    const ref = getRoomRef(roomCode);
     
-    setPlayers(prev => ({
-      ...prev,
-      [userId]: {
-        name: playerName.trim(),
-        score: 0,
-        avatar: AVATARES[selectedAvatarIndex].name,
-        color: COLORES[selectedAvatarIndex],
-        stunned: false,
-        isHost: false
+    try {
+      const snap = await getDoc(ref);
+      if (!snap.exists() || snap.data().status !== 'waiting') return setError('Sala no disponible');
+
+      await updateDoc(ref, {
+        [`players.${userId}`]: {
+          name: playerName.trim(),
+          score: 0,
+          avatar: AVATARES[selectedAvatarIndex].name,
+          color: COLORES[selectedAvatarIndex],
+          stunned: false,
+          isHost: false
+        }
+      });
+      setError('');
+    } catch (err) {
+      setError('Error al unirse: ' + err.message);
+    }
+  };
+
+  const leaveRoom = async () => {
+    if (!roomCode) return;
+    const ref = getRoomRef(roomCode);
+    try {
+      const snap = await getDoc(ref);
+      if (!snap.exists()) return setView('menu');
+
+      const data = snap.data();
+      const playerCount = Object.keys(data.players || {}).length;
+
+      if (data.hostId === userId && playerCount > 1) {
+        const newHost = Object.keys(data.players).find(id => id !== userId);
+        await updateDoc(ref, {
+          hostId: newHost,
+          [`players.${newHost}.isHost`]: true,
+          [`players.${userId}`]: deleteField()
+        });
+      } else if (playerCount <= 1) {
+        await updateDoc(ref, { status: 'closed' });
+      } else {
+        await updateDoc(ref, { [`players.${userId}`]: deleteField() });
       }
-    }));
-    setError('');
-    setView('lobby');
+      setView('menu');
+      setRoomCode('');
+      setPlayers({});
+      setError('');
+    } catch (err) {
+      console.error(err);
+    }
   };
 
-  const startGame = () => {
-    setGameState('racing');
-    setTrafficLight('green');
-    setView('game');
+  const startGame = async () => {
+    try {
+      await updateDoc(getRoomRef(roomCode), { 
+        status: 'racing',
+        trafficLight: 'green'
+      });
+      startTrafficLight();
+    } catch (err) {
+      console.error(err);
+    }
   };
 
-  const leaveRoom = () => {
-    setView('menu');
-    setRoomCode('');
-    setPlayers({});
-    setPlayerName('');
-    setGameState('waiting');
-    setWinnerName(null);
-    setError('');
-  };
-
-  const resetGame = () => {
-    setGameState('waiting');
-    setWinnerName(null);
-    setTrafficLight('green');
-    setPlayers(prev => {
-      const newPlayers = { ...prev };
+  const resetGame = async () => {
+    try {
+      const ref = getRoomRef(roomCode);
+      const snap = await getDoc(ref);
+      const newPlayers = { ...snap.data().players };
+      
       Object.keys(newPlayers).forEach(id => {
         newPlayers[id].score = 0;
         newPlayers[id].stunned = false;
       });
-      return newPlayers;
-    });
-    setView('lobby');
+
+      await updateDoc(ref, { 
+        status: 'waiting', 
+        winnerName: deleteField(),
+        players: newPlayers,
+        trafficLight: 'green'
+      });
+    } catch (err) {
+      console.error(err);
+    }
   };
 
-  // Cambios de semáforo durante la carrera
-  useEffect(() => {
-    if (gameState !== 'racing') return;
+  // === CAMBIOS DE SEMÁFORO ===
+  const startTrafficLight = () => {
+    if (trafficTimerRef.current) clearInterval(trafficTimerRef.current);
     
-    const interval = setInterval(() => {
-      setTrafficLight(prev => prev === 'green' ? 'red' : 'green');
-    }, 2000 + Math.random() * 2000);
-    
-    return () => clearInterval(interval);
-  }, [gameState]);
+    trafficTimerRef.current = setInterval(async () => {
+      try {
+        const ref = getRoomRef(roomCode);
+        const snap = await getDoc(ref);
+        if (!snap.exists() || snap.data().status !== 'racing') {
+          clearInterval(trafficTimerRef.current);
+          return;
+        }
 
+        const newLight = snap.data().trafficLight === 'green' ? 'red' : 'green';
+        await updateDoc(ref, { trafficLight: newLight });
+      } catch (err) {
+        console.error(err);
+      }
+    }, 2000 + Math.random() * 2000);
+  };
+
+  useEffect(() => {
+    return () => {
+      if (trafficTimerRef.current) clearInterval(trafficTimerRef.current);
+    };
+  }, []);
+
+  // === TAP ÉPICO ===
+  const handleTap = useCallback(async () => {
+    if (gameState !== 'racing' || !roomCode || !userId) return;
+
+    const roomRef = getRoomRef(roomCode);
+
+    try {
+      await runTransaction(db, async (transaction) => {
+        const roomSnap = await transaction.get(roomRef);
+        if (!roomSnap.exists()) throw "Sala no existe";
+        
+        const data = roomSnap.data();
+        if (data.status !== 'racing') return;
+
+        const player = data.players?.[userId];
+        if (!player) return;
+
+        if (player.stunned) {
+          transaction.update(roomRef, {
+            [`players.${userId}.stunned`]: false
+          });
+          return;
+        }
+
+        if (data.trafficLight === 'red') {
+          transaction.update(roomRef, {
+            [`players.${userId}.score`]: Math.max(0, (player.score || 0) - 3),
+            [`players.${userId}.stunned`]: true
+          });
+          return;
+        }
+
+        const newScore = (player.score || 0) + 1;
+
+        if (newScore >= targetScore && !data.winnerName) {
+          transaction.update(roomRef, {
+            status: 'finished',
+            winnerName: player.name,
+            [`players.${userId}.score`]: targetScore
+          });
+          clearInterval(trafficTimerRef.current);
+        } else {
+          transaction.update(roomRef, {
+            [`players.${userId}.score`]: increment(1)
+          });
+        }
+      });
+    } catch (err) {
+      console.log("Tap procesado:", err);
+    }
+  }, [roomCode, gameState, userId, targetScore]);
+
+  // === VISTAS ===
   const MenuView = () => (
     <motion.div 
       initial={{ opacity: 0 }}
@@ -501,6 +649,10 @@ export default function FingerRaceGame() {
       </motion.div>
     </motion.div>
   );
+
+  if (!isAuthReady) {
+    return <div className="flex items-center justify-center h-screen bg-slate-900 text-white text-2xl">Cargando...</div>;
+  }
 
   return (
     <AnimatePresence mode="wait">
