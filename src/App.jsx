@@ -71,43 +71,50 @@ export default function FingerRaceGame() {
     return () => unsub();
   }, []);
 
-  // === ESCUCHA DE SALA ===
+// === ESCUCHA DE SALA MEJORADA ===
   useEffect(() => {
-    if (!roomCode || !isAuthReady) return;
+    if (!roomCode || !userId || !isAuthReady) return;
 
     const roomRef = getRoomRef(roomCode);
+    
+    console.log('Montando listener para sala:', roomCode, 'userId:', userId);
+
     const unsub = onSnapshot(roomRef, (snap) => {
       if (!snap.exists()) {
-        setError('Sala no existe');
+        setError('La sala fue eliminada o no existe');
         setView('menu');
+        setRoomCode('');
         return;
       }
 
       const data = snap.data();
-      console.log('Sala actualizada:', data); // DEBUG
-      
+
       setPlayers(data.players || {});
       setGameState(data.status || 'waiting');
       setTrafficLight(data.trafficLight || 'green');
       setWinnerName(data.winnerName || null);
       setIsHost(data.hostId === userId);
 
-      // Cambiar vista según estado
+      // Forzar vista correcta incluso si te unes tarde
       if (data.status === 'racing') {
         setView('game');
       } else if (data.status === 'finished') {
         setView('winner');
-      } else if (data.status === 'waiting' && roomCode) {
+      } else if (data.status === 'waiting') {
         setView('lobby');
       }
     }, (err) => {
-      console.error('Error de listener:', err);
-      setError('Error de conexión: ' + err.message);
+      console.error('Error en listener de sala:', err);
+      setError('Perdiste conexión con la sala');
     });
 
     roomListenerRef.current = unsub;
-    return () => unsub && unsub();
-  }, [roomCode, isAuthReady, userId]);
+
+    return () => {
+      console.log('Desmontando listener de sala');
+      unsub();
+    };
+  }, [roomCode, userId, isAuthReady]); // Solo depende de estos 3
 
   // === CREAR / UNIRSE / SALIR ===
   const createRoom = async () => {
@@ -142,38 +149,46 @@ export default function FingerRaceGame() {
     }
   };
 
-  const joinRoom = async () => {
-    if (!playerName.trim()) return setError('Ingresa tu nombre');
-    if (roomCode.length !== 4) return setError('Código de 4 letras');
-    const ref = getRoomRef(roomCode);
-    const avatarIdx = selectedAvatarIndex >= 0 ? selectedAvatarIndex : 0;
-    const colorIdx = selectedColorIndex >= 0 ? selectedColorIndex : 0;
-    
-    try {
-      await runTransaction(db, async (transaction) => {
-        const snap = await transaction.get(ref);
-        if (!snap.exists() || snap.data().status !== 'waiting') {
-          throw new Error('Sala no disponible');
+const joinRoom = async () => {
+  if (!playerName.trim()) return setError('Ingresa tu nombre');
+  if (roomCode.length !== 4) return setError('Código de 4 letras');
+
+  const ref = getRoomRef(roomCode);
+  const avatarIdx = selectedAvatarIndex >= 0 ? selectedAvatarIndex : 0;
+  const colorIdx = selectedColorIndex >= 0 ? selectedColorIndex : 0;
+
+  try {
+    await runTransaction(db, async (transaction) => {
+      const snap = await transaction.get(ref);
+      if (!snap.exists()) {
+        throw new Error('La sala no existe');
+      }
+      if (snap.data().status !== 'waiting') {
+        throw new Error('La partida ya comenzó o terminó');
+      }
+
+      transaction.update(ref, {
+        [`players.${userId}`]: {
+          name: playerName.trim(),
+          score: 0,
+          avatar: AVATARES[avatarIdx].name || '🚀',
+          color: COLORES[colorIdx] || 'from-purple-500 to-pink-500',
+          stunned: false,
+          isHost: false
         }
-
-        const currentPlayers = snap.data().players || {};
-        transaction.update(ref, {
-          [`players.${userId}`]: {
-            name: playerName.trim(),
-            score: 0,
-            avatar: AVATARES[avatarIdx].name || '🚀',
-            color: COLORES[colorIdx] || 'from-purple-500 to-pink-500',
-            stunned: false,
-            isHost: false
-          }
-        });
       });
-      setError('');
-    } catch (err) {
-      setError('Error al unirse: ' + err.message);
-    }
-  };
+    });
 
+    // ¡AQUÍ VAN LAS LÍNEAS IMPORTANTES! (después del éxito)
+    setRoomCode(roomCode.toUpperCase());  // Asegura que se guarde en mayúsculas
+    setError('');                         // Limpia cualquier error previo
+    setView('lobby');                     // Fuerza la vista lobby (el listener cambiará a 'game' si ya empezó)
+
+  } catch (err) {
+    setError('Error al unirse: ' + err.message);
+  }
+};
+  
   const leaveRoom = async () => {
     if (!roomCode || !userId) return;
     const ref = getRoomRef(roomCode);
